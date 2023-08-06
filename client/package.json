@@ -2,7 +2,7 @@
 	"name": "sqf-language-client",
 	"description": "Language server for SQF",
 	"license": "MIT",
-	"version": "0.0.2",
+	"version": "0.0.3",
 	"engines": {
 		"vscode": "^1.65.0"
 	},

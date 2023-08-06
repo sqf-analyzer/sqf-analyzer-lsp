@@ -53,6 +53,7 @@ function getServer(conf: WorkspaceConfiguration): string {
 
   const bundledPath = path.resolve(__dirname, binaryName);
 
+  console.log(bundledPath);
   if (fileExists(bundledPath)) {
     return bundledPath;
   }
