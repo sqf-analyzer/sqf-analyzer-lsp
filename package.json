@@ -2,7 +2,7 @@
   "name": "sqf-analyzer",
   "description": "SQF language server",
   "license": "MIT",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "categories": [],
   "keywords": [
     "language-server",
@@ -91,7 +91,7 @@
     "vscode-languageclient": "^8.0.2"
   },
   "configurationDefaults": {
-    "sqf": {
+    "[sqf]": {
       "editor.semanticHighlighting.enabled": true
     }
   }

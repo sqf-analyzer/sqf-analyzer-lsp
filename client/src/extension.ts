@@ -21,7 +21,10 @@ import {
   TextEdit,
   Selection,
   Uri,
+  WorkspaceConfiguration,
 } from "vscode";
+import * as path from "path";
+import * as fs from "fs";
 
 import {
   Disposable,
@@ -34,24 +37,35 @@ import {
 let client: LanguageClient;
 // type a = Parameters<>;
 
+function fileExists(path: string): boolean {
+  try {
+    fs.accessSync(path);
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
+
+function getServer(conf: WorkspaceConfiguration): string {
+  const windows = process.platform === "win32";
+  const suffix = windows ? ".exe" : "";
+  const binaryName = "sqf-analyzer-server" + suffix;
+
+  const bundledPath = path.resolve(__dirname, binaryName);
+
+  if (fileExists(bundledPath)) {
+    return bundledPath;
+  }
+
+  return binaryName;
+}
+
+
 export async function activate(context: ExtensionContext) {
-  let disposable = commands.registerCommand("helloworld.helloWorld", async uri => {
-    // The code you place here will be executed every time your command is executed
-    // Display a message box to the user
-    let document = await workspace.openTextDocument(uri);
-    await window.showTextDocument(document);
-
-    // console.log(uri)
-    window.activeTextEditor.document
-    let editor = window.activeTextEditor;
-    let range = new Range(1, 1, 1, 1)
-    editor.selection = new Selection(range.start, range.end);
-  });
-
-  context.subscriptions.push(disposable);
-
   const traceOutputChannel = window.createOutputChannel("SQF Language Server trace");
-  const command = process.env.SERVER_PATH || "sqf-analyzer-server";
+
+  const config = workspace.getConfiguration("sqf-analyzer");
+  const command = process.env.SERVER_PATH || getServer(config);
   const run: Executable = {
     command,
     options: {
