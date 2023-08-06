@@ -11,10 +11,10 @@
   "repository": {
     "url": "https://github.com/sqf-analyzer/sql-analyzer-lsp"
   },
+  "publisher": "SQF-analyzer",
   "engines": {
     "vscode": "^1.66.0"
   },
-  "enabledApiProposals": [],
   "activationEvents": [
     "onLanguage:sqf"
   ],
