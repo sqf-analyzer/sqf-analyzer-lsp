@@ -1,20 +1,112 @@
+# https://github.com/nvarner/typst-lsp/blob/master/.github/workflows/release.yml
+name: Release
 on:
   push:
     tags:
       - "*"
+  workflow_dispatch:
 
-name: Deploy Extension
 jobs:
-  deploy:
-    runs-on: ubuntu-latest
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            rust-target: x86_64-pc-windows-msvc
+            platform: win32
+            arch: x64
+          - os: ubuntu-20.04
+            rust-target: x86_64-unknown-linux-gnu
+            platform: linux
+            arch: x64
+          - os: macos-11
+            rust-target: x86_64-apple-darwin
+            platform: darwin
+            arch: x64
+
+    name: build (${{ matrix.platform }}-${{ matrix.arch }})
+    runs-on: ${{ matrix.os }}
+    env:
+      target: ${{ matrix.platform }}-${{ matrix.arch }}
     steps:
       - uses: actions/checkout@v2
-      - uses: actions/setup-node@v1
+      - uses: Swatinem/rust-cache@v2
+
+      - name: rust toolchain
+        uses: dtolnay/rust-toolchain@stable
         with:
-          node-version: 16
-      - run: npm ci
-      - name: Publish to Visual Studio Marketplace
-        uses: HaaLeo/publish-vscode-extension@v1
+          targets: ${{ matrix.rust-target }}
+
+      - shell: pwsh
+        run: |
+          mkdir out
+          cargo build --release --target ${{ matrix.rust-target }}
+          cp "target/${{ matrix.rust-target }}/release/sqf-analyzer-server$(If ('${{ matrix.platform }}' -eq 'win32') { '.exe' } else { '' } )" "out/"
+          cp "target/${{ matrix.rust-target }}/release/sqf-analyzer-server$(If ('${{ matrix.platform }}' -eq 'win32') { '.exe' } else { '' } )" "sqf-analyzer-server-${{ env.target }}$(If ('${{ matrix.platform }}' -eq 'win32') { '.exe' } else { '' } )"
+
+      - shell: pwsh
+        run: ls
+
+      - uses: actions/setup-node@v3
         with:
-          pat: ${{ secrets.VS_MARKETPLACE_TOKEN }}
-          registryUrl: https://marketplace.visualstudio.com
+          node-version: 18
+      - uses: pnpm/action-setup@v2
+        with:
+          version: 8
+      - run: pnpm i
+      - run: pnpm run build
+      - run: pnpm install vsce
+
+      - shell: pwsh
+        run: pnpm run package --target ${{ env.target }} -o sqf-analyzer-${{ env.target }}.vsix
+
+      - uses: actions/upload-artifact@v2
+        with:
+          name: sqf-analyzer-${{ env.target }}.vsix
+          path: sqf-analyzer-${{ env.target }}.vsix
+
+      - uses: actions/upload-artifact@v2
+        with:
+          name: sqf-analyzer-server-${{ env.target }}
+          path: sqf-analyzer-server-${{ env.target }}${{ fromJSON('["", ".exe"]')[matrix.platform == 'win32'] }}
+
+  release:
+    runs-on: ubuntu-latest
+    needs: [build]
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions/download-artifact@v2
+        with:
+          path: artifacts
+      - name: Display structure of downloaded files
+        run: ls -R artifacts
+      - uses: ncipollo/release-action@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          artifacts: "artifacts/*/*"
+          allowUpdates: true
+          omitBodyDuringUpdate: true
+          omitDraftDuringUpdate: true
+          omitNameDuringUpdate: true
+          omitPrereleaseDuringUpdate: true
+
+  publish:
+    runs-on: ubuntu-latest
+    needs: [build]
+    steps:
+      - uses: actions/setup-node@v3
+        with:
+          node-version: 18
+      - uses: pnpm/action-setup@v2
+        with:
+          version: 8
+      - run: pnpm install vsce
+
+      - uses: actions/download-artifact@v2
+
+      - name: Deploy to VS Code Marketplace
+        run: pnpm vsce publish --no-dependencies --packagePath $(find . -type f -iname '*.vsix') -p $VSCE_PAT
+        env:
+          VSCE_PAT: ${{ secrets.VS_MARKETPLACE_TOKEN }}

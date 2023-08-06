@@ -12,5 +12,5 @@ tower-lsp = { version = "0.19.0", features = ["proposed"]}
 serde = { version = "1.0", features = ["derive"] }
 dashmap = "5.1.0"
 
-sqf = { path = "../sqf" }
+sqf = { git = "https://github.com/sqf-analyzer/sqf-analyzer" }
 lazy_static = "*"

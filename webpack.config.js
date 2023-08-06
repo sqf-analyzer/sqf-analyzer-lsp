@@ -3,6 +3,7 @@
 "use strict";
 
 const path = require("path");
+const webpack = require("webpack");
 
 /**@type {import('webpack').Configuration}*/
 const config = {
@@ -10,7 +11,7 @@ const config = {
 
 	entry: "./client/src/extension.ts", // the entry point of this extension, 📖 -> https://webpack.js.org/configuration/entry-context/
 	output: {
-		// the bundle is stored in the 'dist' folder (check package.json), 📖 -> https://webpack.js.org/configuration/output/
+		// the bundle is stored in the "dist" folder (check package.json), 📖 -> https://webpack.js.org/configuration/output/
 		path: path.resolve(__dirname, "dist"),
 		filename: "extension.js",
 		libraryTarget: "commonjs2",
@@ -34,11 +35,11 @@ const config = {
 				exclude: /node_modules/,
 				use: [
 					{
-						loader: "ts-loader",
-					},
-				],
-			},
-		],
-	},
+						loader: "ts-loader"
+					}
+				]
+			}
+		]
+	}
 };
 module.exports = config;
