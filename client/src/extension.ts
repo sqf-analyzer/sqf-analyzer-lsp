@@ -8,6 +8,7 @@ import {
   ExtensionContext,
   window,
   WorkspaceConfiguration,
+  commands,
 } from "vscode";
 const path = require("path");
 const fs = require("fs");
@@ -80,6 +81,13 @@ export async function activate(context: ExtensionContext) {
 
   // Create the language client and start the client.
   client = new LanguageClient("sqf-analyzer-server", "sqf analyzer server", serverOptions, clientOptions);
+
+  const commandHandler = () => {
+    client.restart()
+  };
+
+  context.subscriptions.push(commands.registerCommand('sqf-analyzer.restart', commandHandler));
+
   client.start();
 }
 

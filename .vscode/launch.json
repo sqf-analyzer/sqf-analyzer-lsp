@@ -21,14 +21,6 @@
         "SERVER_PATH": "${workspaceRoot}/target/debug/sqf-analyzer-server"
       }
     },
-    // {
-    //   "type": "node",
-    //   "request": "attach",
-    //   "name": "Attach to Server",
-    //   "port": 6009,
-    //   "restart": true,
-    //   "outFiles": ["${workspaceRoot}/server/out/**/*.js"]
-    // },
     {
       "name": "Language Server E2E Test",
       "type": "extensionHost",

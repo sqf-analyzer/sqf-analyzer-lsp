@@ -2,7 +2,7 @@
 	"name": "sqf-analyzer",
 	"description": "SQF language server",
 	"license": "MIT",
-	"version": "0.0.5",
+	"version": "0.0.6",
 	"categories": [],
 	"keywords": [
 		"language-server",
@@ -17,6 +17,13 @@
 	},
 	"main": "./out/extension.js",
 	"contributes": {
+		"commands": [
+			{
+				"command": "sqf-analyzer.restart",
+				"title": "sqf-analyzer: Restart Server",
+				"category": "sqf"
+			}
+		],
 		"languages": [
 			{
 				"id": "sqf",
@@ -49,11 +56,12 @@
 		}
 	},
 	"activationEvents": [
-		"onLanguage:sqf"
+		"onLanguage:sqf",
+		"onCommand:sqf-analyzer.restart"
 	],
 	"scripts": {
 		"build-base": "esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --target=node16",
-		"compile": "pnpm run build-base -- --sourcemap",
+		"compile": "pnpm run build-base --sourcemap",
 		"package": "vsce package --no-dependencies",
 		"watch": "pnpm run build-base -- --sourcemap --watch",
 		"check": "tsc --noEmit",

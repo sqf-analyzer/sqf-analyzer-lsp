@@ -1,29 +1,29 @@
-use dashmap::DashMap;
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+use std::sync::Arc;
 
-use sqf::analyzer::{analyze, State};
-use sqf::parser::parse;
-use sqf::span::Spanned;
+use dashmap::DashMap;
 
 use ropey::Rope;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use sqf::analyzer::Origin;
+use sqf::span::Spanned;
+use sqf_analyzer_server::addon;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::notification::Notification;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
-use sqf_analyzer_server::{
-    definition,
-    semantic_token::{semantic_tokens, SemanticTokenLocation, LEGEND_TYPE},
-};
+use sqf_analyzer_server::{analyze::compute, definition, semantic_token::LEGEND_TYPE};
 
 #[derive(Debug)]
 struct Backend {
     client: Client,
-    state_map: DashMap<String, State>,
-    document_map: DashMap<String, Rope>,
-    semantic_token_map: DashMap<String, Vec<SemanticTokenLocation>>,
+    states: addon::States,
+    functions: DashMap<Arc<str>, Spanned<PathBuf>>, // addon functions defined in config.cpp (name, path)
+    documents: DashMap<String, Rope>,
 }
 
 #[tower_lsp::async_trait]
@@ -68,7 +68,7 @@ impl LanguageServer for Backend {
                                     token_types: LEGEND_TYPE.into(),
                                     token_modifiers: vec![],
                                 },
-                                range: Some(true),
+                                range: Some(false),
                                 full: Some(SemanticTokensFullOptions::Bool(true)),
                             },
                             static_registration_options: StaticRegistrationOptions::default(),
@@ -108,6 +108,12 @@ impl LanguageServer for Backend {
     }
 
     async fn did_change(&self, mut params: DidChangeTextDocumentParams) {
+        self.client
+            .log_message(
+                MessageType::INFO,
+                format!("file \"{}\" changed", params.text_document.uri),
+            )
+            .await;
         self.on_change(TextDocumentItem {
             uri: params.text_document.uri,
             text: std::mem::take(&mut params.content_changes[0].text),
@@ -144,15 +150,11 @@ impl LanguageServer for Backend {
         self.client
             .log_message(MessageType::INFO, "semantic_tokens_full")
             .await;
-        let uri = params.text_document.uri.to_string();
+        let uri = params.text_document.uri.as_str();
         let semantic_tokens = || -> Option<Vec<SemanticToken>> {
-            let im_complete_tokens = self.semantic_token_map.get_mut(&uri)?;
-            let rope = self.document_map.get(&uri)?;
-            //let ast: dashmap::mapref::one::Ref<'_, String, Vec<Span<Expr>>> =
-            //   self.ast_map.get(&uri)?;
-            //let extends_tokens = semantic_tokens(&ast);
-            //im_complete_tokens.extend(extends_tokens);
-            //im_complete_tokens.sort_by(|a, b| a.start.cmp(&b.start));
+            let may = self.states.get(uri)?;
+            let im_complete_tokens = &may.as_ref()?.1;
+            let rope = self.documents.get(uri)?;
             let mut pre_line = 0;
             let mut pre_start = 0;
             let semantic_tokens = im_complete_tokens
@@ -190,49 +192,6 @@ impl LanguageServer for Backend {
         Ok(None)
     }
 
-    async fn semantic_tokens_range(
-        &self,
-        params: SemanticTokensRangeParams,
-    ) -> Result<Option<SemanticTokensRangeResult>> {
-        let uri = params.text_document.uri.to_string();
-        let semantic_tokens = || -> Option<Vec<SemanticToken>> {
-            let im_complete_tokens = self.semantic_token_map.get(&uri)?;
-            let rope = self.document_map.get(&uri)?;
-            let mut pre_line = 0;
-            let mut pre_start = 0;
-            let semantic_tokens = im_complete_tokens
-                .iter()
-                .filter_map(|token| {
-                    let line = rope.try_byte_to_line(token.start).ok()? as u32;
-                    let first = rope.try_line_to_char(line as usize).ok()? as u32;
-                    let start = rope.try_byte_to_char(token.start).ok()? as u32 - first;
-                    let ret = Some(SemanticToken {
-                        delta_line: line - pre_line,
-                        delta_start: if start >= pre_start {
-                            start - pre_start
-                        } else {
-                            start
-                        },
-                        length: token.length as u32,
-                        token_type: token.token_type as u32,
-                        token_modifiers_bitset: 0,
-                    });
-                    pre_line = line;
-                    pre_start = start;
-                    ret
-                })
-                .collect::<Vec<_>>();
-            Some(semantic_tokens)
-        }();
-        if let Some(semantic_token) = semantic_tokens {
-            return Ok(Some(SemanticTokensRangeResult::Tokens(SemanticTokens {
-                result_id: None,
-                data: semantic_token,
-            })));
-        }
-        Ok(None)
-    }
-
     async fn inlay_hint(
         &self,
         params: tower_lsp::lsp_types::InlayHintParams,
@@ -242,43 +201,47 @@ impl LanguageServer for Backend {
             .await;
         let uri = &params.text_document.uri;
 
-        let document = match self.document_map.get(uri.as_str()) {
+        let document = match self.documents.get(uri.as_str()) {
             Some(rope) => rope,
             None => return Ok(None),
         };
 
-        let inlay_hint_list = self.state_map.get(uri.as_str()).map(|state| {
-            state
-                .types
-                .iter()
-                .filter_map(|(k, v)| v.map(|v| (k, v)))
-                .map(|(k, v)| (k.span.0, k.span.1, format!(": {v:?}")))
-                .filter_map(|item| {
-                    let end_position = offset_to_position(item.1, &document)?;
-                    let inlay_hint = InlayHint {
-                        text_edits: None,
-                        tooltip: None,
-                        kind: Some(InlayHintKind::TYPE),
-                        padding_left: None,
-                        padding_right: None,
-                        data: None,
-                        position: end_position,
-                        label: InlayHintLabel::LabelParts(vec![InlayHintLabelPart {
-                            value: item.2,
+        let inlay_hint_list = self.states.get(uri.as_str()).and_then(|state| {
+            Some(
+                state
+                    .as_ref()?
+                    .0
+                    .types
+                    .iter()
+                    .filter_map(|(k, v)| v.map(|v| (k, v)))
+                    .map(|(k, v)| (k.span.0, k.span.1, format!(": {v:?}")))
+                    .filter_map(|item| {
+                        let end_position = offset_to_position(item.1, &document)?;
+                        let inlay_hint = InlayHint {
+                            text_edits: None,
                             tooltip: None,
-                            location: Some(Location {
-                                uri: params.text_document.uri.clone(),
-                                range: Range {
-                                    start: Position::new(0, 4),
-                                    end: Position::new(0, 5),
-                                },
-                            }),
-                            command: None,
-                        }]),
-                    };
-                    Some(inlay_hint)
-                })
-                .collect::<Vec<_>>()
+                            kind: Some(InlayHintKind::TYPE),
+                            padding_left: None,
+                            padding_right: None,
+                            data: None,
+                            position: end_position,
+                            label: InlayHintLabel::LabelParts(vec![InlayHintLabelPart {
+                                value: item.2,
+                                tooltip: None,
+                                location: Some(Location {
+                                    uri: params.text_document.uri.clone(),
+                                    range: Range {
+                                        start: Position::new(0, 4),
+                                        end: Position::new(0, 5),
+                                    },
+                                }),
+                                command: None,
+                            }]),
+                        };
+                        Some(inlay_hint)
+                    })
+                    .collect::<Vec<_>>(),
+            )
         });
 
         Ok(inlay_hint_list)
@@ -333,47 +296,34 @@ struct TextDocumentItem {
     version: i32,
 }
 
-type Error = Spanned<String>;
+fn span_to_range((start, end): (usize, usize), rope: &Rope) -> Option<Range> {
+    let start_position = offset_to_position(start, rope)?;
+    let end_position = offset_to_position(end, rope)?;
 
-type Return = (Option<(State, Vec<SemanticTokenLocation>)>, Vec<Error>);
-
-fn compute(text: &str, uri: &Url) -> Return {
-    let path = &uri.as_str()["file://".len()..];
-
-    let ast = sqf::preprocessor::parse(text);
-
-    match ast {
-        Ok(t) => {
-            let semantic_tokens = semantic_tokens(&t);
-            let iter = sqf::preprocessor::AstIterator::new(t, Default::default(), path.into());
-            let (ast, mut errors) = parse(iter);
-            let state = analyze(&ast);
-            errors.extend(state.errors.clone());
-            (Some((state, semantic_tokens)), errors)
-        }
-        Err(e) => (None, vec![e]),
-    }
+    Some(Range::new(start_position, end_position))
 }
 
 impl Backend {
     fn get_definition(&self, params: GotoDefinitionParams) -> Option<GotoDefinitionResponse> {
         let uri = params.text_document_position_params.text_document.uri;
-        self.state_map.get(uri.as_str()).and_then(|state| {
-            let rope = self.document_map.get(&uri.to_string()).unwrap();
+        self.states.get(uri.as_str()).and_then(|state| {
+            let rope = self.documents.get(uri.as_str()).unwrap();
             let offset = position_to_offset(params.text_document_position_params.position, &rope)?;
 
-            let def = definition::get_definition(&state, offset);
+            let def = definition::get_definition(&state.as_ref()?.0, offset);
 
-            def.and_then(|(start, end)| {
-                let start_position = offset_to_position(start, &rope)?;
-                let end_position = offset_to_position(end, &rope)?;
-
-                let range = Range::new(start_position, end_position);
-
-                Some(GotoDefinitionResponse::Scalar(Location::new(
-                    uri.clone(),
-                    range,
-                )))
+            def.and_then(|origin| match origin {
+                Origin::File(span) => {
+                    let range = span_to_range(span, &rope)?;
+                    Some(GotoDefinitionResponse::Scalar(Location::new(
+                        uri.clone(),
+                        range,
+                    )))
+                }
+                Origin::External(origin) => self.functions.get(&origin).map(|path| {
+                    let uri = Url::from_file_path(&path.inner).unwrap();
+                    GotoDefinitionResponse::Scalar(Location::new(uri, Range::default()))
+                }),
             })
         })
     }
@@ -381,10 +331,14 @@ impl Backend {
     async fn on_change(&self, params: TextDocumentItem) {
         let uri = &params.uri;
         let rope = ropey::Rope::from_str(&params.text);
-        self.document_map
-            .insert(params.uri.to_string(), rope.clone());
+        self.documents.insert(params.uri.to_string(), rope.clone());
 
-        let (ast_state_semantic, errors) = compute(&params.text, uri);
+        let path = uri.to_file_path().expect("utf-8 path");
+        let (ast_state_semantic, errors) = compute(
+            &params.text,
+            path.clone(),
+            self.functions.iter().map(|x| x.key().clone()),
+        );
 
         let diagnostics = errors
             .into_iter()
@@ -406,10 +360,56 @@ impl Backend {
             .publish_diagnostics(params.uri.clone(), diagnostics, Some(params.version))
             .await;
 
-        if let Some((state, semantic)) = ast_state_semantic {
-            self.semantic_token_map
-                .insert(params.uri.to_string(), semantic);
-            self.state_map.insert(params.uri.to_string(), state);
+        self.states
+            .insert(params.uri.to_string(), ast_state_semantic);
+
+        let Some((path, functions)) = addon::identify_addon(uri) else {
+            return
+        };
+        let errors = addon::process_addon(path, &functions);
+
+        self.client
+            .log_message(
+                MessageType::INFO,
+                format!(
+                    "Found addon with {} functions. Example: \"{}\"",
+                    functions.len(),
+                    functions
+                        .keys()
+                        .next()
+                        .map(|x| x.as_ref())
+                        .unwrap_or_default()
+                ),
+            )
+            .await;
+
+        self.functions.clear();
+        for (a, b) in functions {
+            self.functions.insert(a, b);
+        }
+
+        let diagnostics = errors
+            .into_iter()
+            .filter_map(|item| {
+                let (message, span) = (item.inner, item.span);
+
+                let start_position = offset_to_position(span.0, &rope)?;
+                let end_position = offset_to_position(span.1, &rope)?;
+                Some((
+                    item.url,
+                    Diagnostic::new_simple(Range::new(start_position, end_position), message),
+                ))
+            })
+            .fold(BTreeMap::<_, Vec<_>>::new(), |mut acc, (a, b)| {
+                acc.entry(a).or_default().push(b);
+                acc
+            });
+
+        // todo: use futures join to push them concurrently
+        for (item, diagnostics) in diagnostics {
+            self.client
+                .publish_diagnostics(item, diagnostics, Some(params.version))
+                .await;
         }
     }
 }
@@ -423,9 +423,9 @@ async fn main() {
 
     let (service, socket) = LspService::build(|client| Backend {
         client,
-        state_map: DashMap::new(),
-        document_map: DashMap::new(),
-        semantic_token_map: DashMap::new(),
+        functions: DashMap::new(),
+        states: DashMap::new(),
+        documents: DashMap::new(),
     })
     .finish();
 
