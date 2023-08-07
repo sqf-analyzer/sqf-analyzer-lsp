@@ -41,9 +41,9 @@ jobs:
 
       - shell: pwsh
         run: |
-          mkdir out
+          mkdir ./client/out
           cargo build --release --target ${{ matrix.rust-target }}
-          cp "target/${{ matrix.rust-target }}/release/sqf-analyzer-server$(If ('${{ matrix.platform }}' -eq 'win32') { '.exe' } else { '' } )" "out/"
+          cp "target/${{ matrix.rust-target }}/release/sqf-analyzer-server$(If ('${{ matrix.platform }}' -eq 'win32') { '.exe' } else { '' } )" "client/out/"
           cp "target/${{ matrix.rust-target }}/release/sqf-analyzer-server$(If ('${{ matrix.platform }}' -eq 'win32') { '.exe' } else { '' } )" "sqf-analyzer-server-${{ env.target }}$(If ('${{ matrix.platform }}' -eq 'win32') { '.exe' } else { '' } )"
 
       - shell: pwsh
@@ -56,16 +56,16 @@ jobs:
         with:
           version: 8
       - run: pnpm i
-      - run: pnpm run build
-      - run: pnpm install vsce
+        working-directory: ./client
 
       - shell: pwsh
         run: pnpm run package --target ${{ env.target }} -o sqf-analyzer-${{ env.target }}.vsix
+        working-directory: ./client
 
       - uses: actions/upload-artifact@v2
         with:
           name: sqf-analyzer-${{ env.target }}.vsix
-          path: sqf-analyzer-${{ env.target }}.vsix
+          path: ./client/sqf-analyzer-${{ env.target }}.vsix
 
       - uses: actions/upload-artifact@v2
         with:

@@ -1,0 +1,9 @@
+**
+!out/extension.js
+!out/sqf-analyzer-server
+!out/sqf-analyzer-server.exe
+!package.json
+!pnpm-lock.yaml
+!icons/**
+!README.md
+!LICENSE.md

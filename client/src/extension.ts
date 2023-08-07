@@ -4,30 +4,15 @@
  * ------------------------------------------------------------------------------------------ */
 
 import {
-  languages,
   workspace,
-  EventEmitter,
   ExtensionContext,
   window,
-  InlayHintsProvider,
-  TextDocument,
-  CancellationToken,
-  Range,
-  InlayHint,
-  TextDocumentChangeEvent,
-  ProviderResult,
-  commands,
-  WorkspaceEdit,
-  TextEdit,
-  Selection,
-  Uri,
   WorkspaceConfiguration,
 } from "vscode";
-import * as path from "path";
-import * as fs from "fs";
+const path = require("path");
+const fs = require("fs");
 
 import {
-  Disposable,
   Executable,
   LanguageClient,
   LanguageClientOptions,
@@ -51,6 +36,8 @@ function getServer(conf: WorkspaceConfiguration): string {
   const suffix = windows ? ".exe" : "";
   const binaryName = "sqf-analyzer-server" + suffix;
 
+  console.log(binaryName);
+  console.log(__dirname);
   const bundledPath = path.resolve(__dirname, binaryName);
 
   console.log(bundledPath);
