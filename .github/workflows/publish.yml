@@ -30,14 +30,13 @@ jobs:
       target: ${{ matrix.platform }}-${{ matrix.arch }}
     steps:
       - uses: actions/checkout@v2
+      - name: Install latest
+        uses: actions-rs/toolchain@v1
+        with:
+            target: ${{ matrix.rust-target }}
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.platform }}-${{ matrix.arch }}
-
-      - name: rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.rust-target }}
 
       - shell: pwsh
         run: |
