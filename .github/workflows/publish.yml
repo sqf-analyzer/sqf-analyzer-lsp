@@ -29,10 +29,11 @@ jobs:
     env:
       target: ${{ matrix.platform }}-${{ matrix.arch }}
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
       - name: Install latest
         uses: actions-rs/toolchain@v1
         with:
+            toolchain: stable
             target: ${{ matrix.rust-target }}
       - uses: Swatinem/rust-cache@v2
         with:
