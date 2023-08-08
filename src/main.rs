@@ -8,7 +8,7 @@ use ropey::Rope;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use sqf::analyzer::Origin;
+use sqf::analyzer::{Origin, Output, Parameter};
 use sqf::span::Spanned;
 use sqf_analyzer_server::addon;
 use tower_lsp::jsonrpc::Result;
@@ -22,7 +22,7 @@ use sqf_analyzer_server::{analyze::compute, definition, semantic_token::LEGEND_T
 struct Backend {
     client: Client,
     states: addon::States,
-    functions: DashMap<Arc<str>, Spanned<PathBuf>>, // addon functions defined in config.cpp (name, path)
+    functions: DashMap<Arc<str>, (Spanned<PathBuf>, Vec<Parameter>)>, // addon functions defined in config.cpp (name, path)
     documents: DashMap<String, Rope>,
 }
 
@@ -199,52 +199,7 @@ impl LanguageServer for Backend {
         self.client
             .log_message(MessageType::INFO, "inlay hint")
             .await;
-        let uri = &params.text_document.uri;
-
-        let document = match self.documents.get(uri.as_str()) {
-            Some(rope) => rope,
-            None => return Ok(None),
-        };
-
-        let inlay_hint_list = self.states.get(uri.as_str()).and_then(|state| {
-            Some(
-                state
-                    .as_ref()?
-                    .0
-                    .types
-                    .iter()
-                    .filter_map(|(k, v)| v.map(|v| (k, v)))
-                    .map(|(k, v)| (k.span.0, k.span.1, format!(": {v:?}")))
-                    .filter_map(|item| {
-                        let end_position = offset_to_position(item.1, &document)?;
-                        let inlay_hint = InlayHint {
-                            text_edits: None,
-                            tooltip: None,
-                            kind: Some(InlayHintKind::TYPE),
-                            padding_left: None,
-                            padding_right: None,
-                            data: None,
-                            position: end_position,
-                            label: InlayHintLabel::LabelParts(vec![InlayHintLabelPart {
-                                value: item.2,
-                                tooltip: None,
-                                location: Some(Location {
-                                    uri: params.text_document.uri.clone(),
-                                    range: Range {
-                                        start: Position::new(0, 4),
-                                        end: Position::new(0, 5),
-                                    },
-                                }),
-                                command: None,
-                            }]),
-                        };
-                        Some(inlay_hint)
-                    })
-                    .collect::<Vec<_>>(),
-            )
-        });
-
-        Ok(inlay_hint_list)
+        Ok(self.inlay(params))
     }
 
     async fn did_change_configuration(&self, _: DidChangeConfigurationParams) {
@@ -321,7 +276,7 @@ impl Backend {
                     )))
                 }
                 Origin::External(origin) => self.functions.get(&origin).map(|path| {
-                    let uri = Url::from_file_path(&path.inner).unwrap();
+                    let uri = Url::from_file_path(&path.0.inner).unwrap();
                     GotoDefinitionResponse::Scalar(Location::new(uri, Range::default()))
                 }),
             })
@@ -333,12 +288,22 @@ impl Backend {
         let rope = ropey::Rope::from_str(&params.text);
         self.documents.insert(params.uri.to_string(), rope.clone());
 
+        let origins = self.functions.iter().map(|x| {
+            (
+                x.key().clone(),
+                (
+                    Origin::External(x.key().clone()),
+                    Some(Output::Code(x.value().1.clone())),
+                ),
+            )
+        });
         let path = uri.to_file_path().expect("utf-8 path");
-        let (ast_state_semantic, errors) = compute(
-            &params.text,
-            path.clone(),
-            self.functions.iter().map(|x| x.key().clone()),
-        );
+        let s = compute(&params.text, path.clone(), origins);
+
+        let (state_semantic, errors) = match s {
+            Ok((state, semantic, errors)) => (Some((state, semantic)), errors),
+            Err(e) => (None, vec![e]),
+        };
 
         let diagnostics = errors
             .into_iter()
@@ -360,13 +325,12 @@ impl Backend {
             .publish_diagnostics(params.uri.clone(), diagnostics, Some(params.version))
             .await;
 
-        self.states
-            .insert(params.uri.to_string(), ast_state_semantic);
+        self.states.insert(params.uri.to_string(), state_semantic);
 
         let Some((path, functions)) = addon::identify_addon(uri) else {
             return
         };
-        let errors = addon::process_addon(path, &functions);
+        let (signatures, errors) = addon::process_addon(path, &functions);
 
         self.client
             .log_message(
@@ -384,7 +348,7 @@ impl Backend {
             .await;
 
         self.functions.clear();
-        for (a, b) in functions {
+        for (a, b) in signatures {
             self.functions.insert(a, b);
         }
 
@@ -400,6 +364,8 @@ impl Backend {
                     Diagnostic::new_simple(Range::new(start_position, end_position), message),
                 ))
             })
+            // filter the current file because it may have not been saved and thus cannot be analyzed
+            .filter(|x| x.0 != params.uri)
             .fold(BTreeMap::<_, Vec<_>>::new(), |mut acc, (a, b)| {
                 acc.entry(a).or_default().push(b);
                 acc
@@ -411,6 +377,76 @@ impl Backend {
                 .publish_diagnostics(item, diagnostics, Some(params.version))
                 .await;
         }
+    }
+
+    fn inlay(&self, params: tower_lsp::lsp_types::InlayHintParams) -> Option<Vec<InlayHint>> {
+        let uri = &params.text_document.uri;
+
+        let document = match self.documents.get(uri.as_str()) {
+            Some(rope) => rope,
+            None => return None,
+        };
+
+        let state = self.states.get(uri.as_str())?;
+        let state = &state.as_ref()?.0;
+
+        let items = state
+            .types
+            .iter()
+            .filter_map(|(k, v)| v.map(|v| (k, v)))
+            .filter_map(|(span, type_)| {
+                let end_position = offset_to_position(span.1, &document)?;
+                let inlay_hint = InlayHint {
+                    text_edits: None,
+                    tooltip: None,
+                    kind: Some(InlayHintKind::TYPE),
+                    padding_left: None,
+                    padding_right: None,
+                    data: None,
+                    position: end_position,
+                    label: InlayHintLabel::LabelParts(vec![InlayHintLabelPart {
+                        value: format!(": {type_:?}"),
+                        tooltip: None,
+                        location: Some(Location {
+                            uri: params.text_document.uri.clone(),
+                            range: Range {
+                                start: Position::new(0, 4),
+                                end: Position::new(0, 5),
+                            },
+                        }),
+                        command: None,
+                    }]),
+                };
+                Some(inlay_hint)
+            });
+
+        let params = state.parameters.iter().filter_map(|(span, name)| {
+            let position = offset_to_position(span.0, &document)?;
+            let inlay_hint = InlayHint {
+                text_edits: None,
+                tooltip: None,
+                kind: Some(InlayHintKind::PARAMETER),
+                padding_left: None,
+                padding_right: None,
+                data: None,
+                position,
+                label: InlayHintLabel::LabelParts(vec![InlayHintLabelPart {
+                    value: format!("{name}: "),
+                    tooltip: None,
+                    location: Some(Location {
+                        uri: params.text_document.uri.clone(),
+                        range: Range {
+                            start: Position::new(0, 4),
+                            end: Position::new(0, 5),
+                        },
+                    }),
+                    command: None,
+                }]),
+            };
+            Some(inlay_hint)
+        });
+
+        Some(items.chain(params).collect())
     }
 }
 
