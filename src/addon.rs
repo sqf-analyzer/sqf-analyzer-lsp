@@ -24,30 +24,10 @@ pub fn identify_addon(url: &Url) -> Option<(PathBuf, Functions)> {
         if !errors.is_empty() {
             return None;
         }
-        let functions = functions
-            .into_iter()
-            .map(|(k, v)| {
-                (
-                    k,
-                    v.map(|x| {
-                        let path = string_to_path(&x);
-                        addon_path.parent().unwrap().join(path)
-                    }),
-                )
-            })
-            .collect();
 
         return Some((addon_path, functions));
     }
     None
-}
-
-fn string_to_path(path: &str) -> PathBuf {
-    let mut new: PathBuf = PathBuf::new();
-    for path in path.split('\\') {
-        new.push(path)
-    }
-    new
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -98,8 +78,8 @@ pub fn process_addon(addon_path: PathBuf, functions: &Functions) -> (Signatures,
             url: Url::from_file_path(&path.inner).unwrap(),
         }));
 
-        if let Some(signature) = state.signature {
-            signatures.insert(name.clone(), (path.clone(), signature));
+        if let Some(signature) = state.signature() {
+            signatures.insert(name.clone(), (path.clone(), signature.to_vec()));
         }
     }
 
