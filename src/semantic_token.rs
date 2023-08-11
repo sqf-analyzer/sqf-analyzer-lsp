@@ -3,7 +3,7 @@ use std::collections::{HashMap, VecDeque};
 use sqf::{
     analyzer::{BINARY, NULLARY, UNARY},
     preprocessor::Ast,
-    span::{Span, Spanned},
+    span::Span,
 };
 use tower_lsp::lsp_types::SemanticTokenType;
 
@@ -44,15 +44,38 @@ fn recurse(ast: &Ast, container: &mut Vec<SemanticTokenLocation>) {
     match ast {
         Ast::Ifdef(ifdef) | Ast::Ifndef(ifdef) => {
             container.push(to_st(ifdef.keyword.span, SemanticTokenType::MACRO));
+            container.push(to_st(ifdef.endif_keyword.span, SemanticTokenType::MACRO));
             if let Some(else_) = ifdef.else_keyword {
                 container.push(to_st(else_.span, SemanticTokenType::MACRO));
+            }
+            for token in &ifdef.then {
+                recurse(token, container)
+            }
+            for token in &ifdef.else_ {
+                recurse(token, container)
             }
         }
         Ast::If(if_) => {
             container.push(to_st(if_.keyword.span, SemanticTokenType::MACRO));
+            for token in &if_.expr {
+                recurse(token, container)
+            }
+            container.push(to_st(if_.endif_keyword.span, SemanticTokenType::MACRO));
+            for token in &if_.then {
+                recurse(token, container)
+            }
+            for token in &if_.else_ {
+                recurse(token, container)
+            }
         }
         Ast::Define(define) => {
             container.push(to_st(define.keyword.span, SemanticTokenType::MACRO));
+            container.push(to_st(define.name.span, SemanticTokenType::VARIABLE));
+            if let Some(tokens) = &define.arguments {
+                for token in tokens {
+                    container.push(to_st(token.span, infer_st(token.inner.as_ref())));
+                }
+            }
         }
         Ast::Undefine(keyword, variable) => {
             container.push(to_st(keyword.span, SemanticTokenType::MACRO));
@@ -63,32 +86,26 @@ fn recurse(ast: &Ast, container: &mut Vec<SemanticTokenLocation>) {
             container.push(to_st(token.span, SemanticTokenType::STRING));
         }
         Ast::Comment(token) => container.push(to_st(token.span, SemanticTokenType::COMMENT)),
-        Ast::Term(token) => {
-            if let Some(t) = get_semantic_tokens(token) {
-                container.push(t)
-            }
-        }
+        Ast::Term(token) => container.push(to_st(token.span, infer_st(token.inner))),
     }
 }
 
-fn get_semantic_tokens(token: &Spanned<&str>) -> Option<SemanticTokenLocation> {
-    let span = token.span;
-
-    let bytes = token.inner.as_bytes();
+fn infer_st(token: &str) -> SemanticTokenType {
+    let bytes = token.as_bytes();
     if bytes.len() >= 2 && (bytes[0] == bytes[bytes.len() - 1]) && bytes[0] == b'\"' {
-        return Some(to_st(span, SemanticTokenType::STRING));
+        return SemanticTokenType::STRING;
     }
 
-    if token.inner.parse::<f32>().is_ok() {
-        return Some(to_st(span, SemanticTokenType::NUMBER));
+    if token.parse::<f32>().is_ok() {
+        return SemanticTokenType::NUMBER;
     }
 
-    let token = token.inner.to_lowercase(); // SQF is case insensitive
+    let token = token.to_lowercase(); // SQF is case insensitive
     let token = token.as_str();
     if BINARY.contains_key(token) || UNARY.contains_key(token) || NULLARY.contains_key(token) {
-        Some(to_st(span, SemanticTokenType::KEYWORD))
+        SemanticTokenType::KEYWORD
     } else {
-        Some(to_st(span, SemanticTokenType::VARIABLE))
+        SemanticTokenType::VARIABLE
     }
 }
 
