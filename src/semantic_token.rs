@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 use sqf::{
     analyzer::{BINARY, NULLARY, UNARY},
@@ -42,10 +42,15 @@ fn to_st(span: Span, token_type: SemanticTokenType) -> SemanticTokenLocation {
 
 fn recurse(ast: &Ast, container: &mut Vec<SemanticTokenLocation>) {
     match ast {
-        Ast::Ifdef(keyword, _, _, _) | Ast::Ifndef(keyword, _, _, _) => {
-            container.push(to_st(keyword.span, SemanticTokenType::MACRO));
+        Ast::Ifdef(ifdef) | Ast::Ifndef(ifdef) => {
+            container.push(to_st(ifdef.keyword.span, SemanticTokenType::MACRO));
+            if let Some(else_) = ifdef.else_keyword {
+                container.push(to_st(else_.span, SemanticTokenType::MACRO));
+            }
         }
-        Ast::If(_, _, _) => {}
+        Ast::If(if_) => {
+            container.push(to_st(if_.keyword.span, SemanticTokenType::MACRO));
+        }
         Ast::Define(define) => {
             container.push(to_st(define.keyword.span, SemanticTokenType::MACRO));
         }
@@ -57,7 +62,6 @@ fn recurse(ast: &Ast, container: &mut Vec<SemanticTokenLocation>) {
             container.push(to_st(keyword.span, SemanticTokenType::MACRO));
             container.push(to_st(token.span, SemanticTokenType::STRING));
         }
-        Ast::Body(tokens) => tokens.iter().for_each(|ast| recurse(ast, container)),
         Ast::Comment(token) => container.push(to_st(token.span, SemanticTokenType::COMMENT)),
         Ast::Term(token) => {
             if let Some(t) = get_semantic_tokens(token) {
@@ -88,9 +92,11 @@ fn get_semantic_tokens(token: &Spanned<&str>) -> Option<SemanticTokenLocation> {
     }
 }
 
-pub fn semantic_tokens(ast: &Ast) -> Vec<SemanticTokenLocation> {
+pub fn semantic_tokens(tokens: &VecDeque<Ast>) -> Vec<SemanticTokenLocation> {
     let mut container = vec![];
 
-    recurse(ast, &mut container);
+    for ast in tokens {
+        recurse(ast, &mut container);
+    }
     container
 }

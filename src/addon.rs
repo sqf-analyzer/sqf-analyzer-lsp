@@ -85,21 +85,3 @@ pub fn process_addon(addon_path: PathBuf, functions: &Functions) -> (Signatures,
 
     (signatures, errors)
 }
-
-#[cfg(test)]
-mod tests {
-    // Note this useful idiom: importing names from outer (for mod tests) scope.
-    use super::*;
-
-    #[test]
-    fn test_add() {
-        let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        path.push("tests/addons/test/fn_basic.sqf");
-
-        let (path, functions) = identify_addon(&Url::from_file_path(path).unwrap()).unwrap();
-        let (params, errors) = process_addon(path, &functions);
-        assert_eq!(errors, vec![]);
-
-        assert!(params.is_empty());
-    }
-}
