@@ -4,9 +4,9 @@ use std::sync::Arc;
 
 use dashmap::DashMap;
 use ropey::Rope;
+use sqf;
 use sqf::analyzer::{Origin, Output, Parameter, State};
-use sqf::correct_path;
-use sqf::cpp::analyze_addon;
+use sqf::cpp::{analyze_addon, analyze_mission};
 use sqf::span::{Span, Spanned};
 use sqf::types::Type;
 use tower_lsp::lsp_types::Url;
@@ -22,6 +22,21 @@ pub fn identify_addon(url: &Url) -> Option<(PathBuf, Functions)> {
     let mut addon_path = url.to_file_path().ok()?;
     while addon_path.pop() {
         let Ok((functions, errors)) = analyze_addon(addon_path.clone()) else {
+            continue
+        };
+        if !errors.is_empty() {
+            return None;
+        }
+
+        return Some((addon_path, functions));
+    }
+    None
+}
+
+pub fn identify_mission(url: &Url) -> Option<(PathBuf, Functions)> {
+    let mut addon_path = url.to_file_path().ok()?;
+    while addon_path.pop() {
+        let Ok((functions, errors)) = analyze_mission(addon_path.clone()) else {
             continue
         };
         if !errors.is_empty() {
@@ -52,24 +67,22 @@ type R = (
 
 fn process_file(
     name: Arc<str>,
-    path_: Spanned<PathBuf>,
+    path: PathBuf,
+    span: Span,
     addon_path: PathBuf,
     functions: &Functions,
 ) -> Option<R> {
     let mut errors = vec![];
-    let Some(path) = correct_path(&path_.inner) else {
-        return None
-    };
     let Ok(content) = std::fs::read_to_string(&path) else {
         let url = Url::from_file_path(addon_path.join("config.cpp")).expect("todo: non-utf8 paths");
         errors.push(Error {
             inner: format!("The function \"{}\" is defined but the file \"{}\" does not exist", name, path.display()),
-            span: path_.span,
+            span,
             url,
         });
         return Some((errors, Spanned {
             inner: path.clone(),
-            span: path_.span,
+            span,
         }, None, None))
     };
 
@@ -91,7 +104,7 @@ fn process_file(
                 errors,
                 Spanned {
                     inner: path.clone(),
-                    span: path_.span,
+                    span,
                 },
                 None,
                 None,
@@ -109,7 +122,7 @@ fn process_file(
         errors,
         Spanned {
             inner: path.clone(),
-            span: path_.span,
+            span,
         },
         state.signature().cloned(),
         state.return_type(),
@@ -120,7 +133,29 @@ pub fn process_addon(addon_path: PathBuf, functions: &Functions) -> (Signatures,
     let mut errors = vec![];
     let mut signatures = Signatures::default();
     for (name, path) in functions.iter() {
-        let Some((e, path, signature, return_type)) = process_file(name.clone(), path.clone(), addon_path.clone(), functions) else{ continue};
+        let span = path.span;
+        let Some(path) = sqf::find_addon_path(&path.inner) else {
+            continue
+        };
+
+        let Some((e, path, signature, return_type)) = process_file(name.clone(), path, span, addon_path.clone(), functions) else{ continue };
+        errors.extend(e);
+        signatures.insert(name.clone(), (path, signature, return_type));
+    }
+
+    (signatures, errors)
+}
+
+pub fn process_mission(addon_path: PathBuf, functions: &Functions) -> (Signatures, Vec<Error>) {
+    let mut errors = vec![];
+    let mut signatures = Signatures::default();
+    for (name, path) in functions.iter() {
+        let span = path.span;
+        let Some(path) = sqf::find_mission_path(&path.inner) else {
+            continue
+        };
+
+        let Some((e, path, signature, return_type)) = process_file(name.clone(), path, span, addon_path.clone(), functions) else { continue };
         errors.extend(e);
         signatures.insert(name.clone(), (path, signature, return_type));
     }

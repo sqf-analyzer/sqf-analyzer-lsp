@@ -344,28 +344,31 @@ impl Backend {
         };
         self.is_loaded.store(true, Ordering::Relaxed);
         self.client
-            .log_message(MessageType::INFO, "loading addon")
+            .log_message(MessageType::INFO, "loading mission or addon")
             .await;
 
-        let Some((path, functions)) = addon::identify_addon(uri) else {
-            return
+        let (signatures, errors) = if let Some((path, functions)) = addon::identify_addon(uri) {
+            self.client
+                .log_message(
+                    MessageType::INFO,
+                    format!("Found addon with {} functions.", functions.len()),
+                )
+                .await;
+            addon::process_addon(path, &functions)
+        } else if let Some((path, functions)) = addon::identify_mission(uri) {
+            self.client
+                .log_message(
+                    MessageType::INFO,
+                    format!("Found mission with {} functions.", functions.len()),
+                )
+                .await;
+            addon::process_mission(path, &functions)
+        } else {
+            self.client
+                .log_message(MessageType::INFO, "neither mission nor addon found")
+                .await;
+            return;
         };
-        let (signatures, errors) = addon::process_addon(path, &functions);
-
-        self.client
-            .log_message(
-                MessageType::INFO,
-                format!(
-                    "Found addon with {} functions. Example: \"{}\"",
-                    functions.len(),
-                    functions
-                        .keys()
-                        .next()
-                        .map(|x| x.as_ref())
-                        .unwrap_or_default()
-                ),
-            )
-            .await;
 
         self.functions.clear();
         for (a, b) in signatures {
