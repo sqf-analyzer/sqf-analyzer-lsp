@@ -1,18 +1,21 @@
-use dashmap::DashMap;
-use ropey::Rope;
-use sqf::analyzer::{Origin, Output, Parameter, State};
-use sqf::cpp::analyze_addon;
-use sqf::span::{Span, Spanned};
-use sqf::types::Type;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+
+use dashmap::DashMap;
+use ropey::Rope;
+use sqf::analyzer::{Origin, Output, Parameter, State};
+use sqf::correct_path;
+use sqf::cpp::analyze_addon;
+use sqf::span::{Span, Spanned};
+use sqf::types::Type;
 use tower_lsp::lsp_types::Url;
 
 use crate::analyze::compute;
 use crate::semantic_token::SemanticTokenLocation;
 
-type Signatures = HashMap<Arc<str>, (Spanned<PathBuf>, Vec<Parameter>)>;
+pub type Signature = (Spanned<PathBuf>, Option<Vec<Parameter>>, Option<Type>);
+type Signatures = HashMap<Arc<str>, Signature>;
 type Functions = HashMap<Arc<str>, Spanned<PathBuf>>;
 
 pub fn identify_addon(url: &Url) -> Option<(PathBuf, Functions)> {
@@ -40,47 +43,86 @@ pub struct Error {
 pub type Documents = DashMap<String, Rope>;
 pub type States = DashMap<String, Option<(State, Vec<SemanticTokenLocation>)>>;
 
+type R = (
+    Vec<Error>,
+    Spanned<PathBuf>,
+    Option<Vec<Parameter>>,
+    Option<Type>,
+);
+
+fn process_file(
+    name: Arc<str>,
+    path_: Spanned<PathBuf>,
+    addon_path: PathBuf,
+    functions: &Functions,
+) -> Option<R> {
+    let mut errors = vec![];
+    let Some(path) = correct_path(&path_.inner) else {
+        return None
+    };
+    let Ok(content) = std::fs::read_to_string(&path) else {
+        let url = Url::from_file_path(addon_path.join("config.cpp")).expect("todo: non-utf8 paths");
+        errors.push(Error {
+            inner: format!("The function \"{}\" is defined but the file \"{}\" does not exist", name, path.display()),
+            span: path_.span,
+            url,
+        });
+        return Some((errors, Spanned {
+            inner: path.clone(),
+            span: path_.span,
+        }, None, None))
+    };
+
+    let origins = functions.iter().map(|(k, _)| {
+        (
+            k.clone(),
+            (Origin::External(k.clone()), Some(Output::Type(Type::Code))),
+        )
+    });
+    let (state, _, new_errors) = match compute(&content, path.clone(), origins) {
+        Ok(a) => a,
+        Err(e) => {
+            errors.push(Error {
+                inner: e.inner,
+                span: e.span,
+                url: Url::from_file_path(&path).unwrap(),
+            });
+            return Some((
+                errors,
+                Spanned {
+                    inner: path.clone(),
+                    span: path_.span,
+                },
+                None,
+                None,
+            ));
+        }
+    };
+
+    errors.extend(new_errors.into_iter().map(|x| Error {
+        inner: x.inner,
+        span: x.span,
+        url: Url::from_file_path(&path).unwrap(),
+    }));
+
+    Some((
+        errors,
+        Spanned {
+            inner: path.clone(),
+            span: path_.span,
+        },
+        state.signature().cloned(),
+        state.return_type(),
+    ))
+}
+
 pub fn process_addon(addon_path: PathBuf, functions: &Functions) -> (Signatures, Vec<Error>) {
     let mut errors = vec![];
     let mut signatures = Signatures::default();
-    for (name, path) in functions {
-        let Ok(content) = std::fs::read_to_string(&path.inner) else {
-            let url = Url::from_file_path(addon_path.join("config.cpp")).expect("todo: non-utf8 paths");
-            errors.push(Error {
-                inner: format!("The function \"{}\" is defined but the file \"{}\" does not exist", name, path.inner.display()),
-                span: path.span,
-                url,
-            });
-            continue
-        };
-
-        let origins = functions.iter().map(|(k, _)| {
-            (
-                k.clone(),
-                (Origin::External(k.clone()), Some(Output::Type(Type::Code))),
-            )
-        });
-        let (state, _, new_errors) = match compute(&content, path.inner.clone(), origins) {
-            Ok(a) => a,
-            Err(e) => {
-                errors.push(Error {
-                    inner: e.inner,
-                    span: e.span,
-                    url: Url::from_file_path(&path.inner).unwrap(),
-                });
-                continue;
-            }
-        };
-
-        errors.extend(new_errors.into_iter().map(|x| Error {
-            inner: x.inner,
-            span: x.span,
-            url: Url::from_file_path(&path.inner).unwrap(),
-        }));
-
-        if let Some(signature) = state.signature() {
-            signatures.insert(name.clone(), (path.clone(), signature.to_vec()));
-        }
+    for (name, path) in functions.iter() {
+        let Some((e, path, signature, return_type)) = process_file(name.clone(), path.clone(), addon_path.clone(), functions) else{ continue};
+        errors.extend(e);
+        signatures.insert(name.clone(), (path, signature, return_type));
     }
 
     (signatures, errors)

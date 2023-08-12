@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use dashmap::DashMap;
@@ -8,22 +8,24 @@ use ropey::Rope;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use sqf::analyzer::{Origin, Output, Parameter};
-use sqf::span::Spanned;
+use sqf::analyzer::{Origin, Output};
 use sqf_analyzer_server::addon;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::notification::Notification;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
-use sqf_analyzer_server::{analyze::compute, definition, semantic_token::LEGEND_TYPE};
+use sqf_analyzer_server::{
+    addon::Signature, analyze::compute, definition, semantic_token::LEGEND_TYPE,
+};
 
 #[derive(Debug)]
 struct Backend {
     client: Client,
     states: addon::States,
-    functions: DashMap<Arc<str>, (Spanned<PathBuf>, Vec<Parameter>)>, // addon functions defined in config.cpp (name, path)
+    functions: DashMap<Arc<str>, Signature>, // addon functions defined in config.cpp (name, path)
     documents: DashMap<String, Rope>,
+    is_loaded: AtomicBool,
 }
 
 #[tower_lsp::async_trait]
@@ -293,7 +295,7 @@ impl Backend {
                 x.key().clone(),
                 (
                     Origin::External(x.key().clone()),
-                    Some(Output::Code(x.value().1.clone())),
+                    Some(Output::Code(x.value().1.clone(), x.value().2)),
                 ),
             )
         });
@@ -325,7 +327,25 @@ impl Backend {
             .publish_diagnostics(params.uri.clone(), diagnostics, Some(params.version))
             .await;
 
+        let key = self.functions.iter().find_map(|x| {
+            (x.value().0.inner == path).then_some((x.key().clone(), x.value().0.clone()))
+        });
+        if let Some((name, path)) = key {
+            if let Some((s, _)) = &state_semantic {
+                self.functions
+                    .insert(name, (path, s.signature().cloned(), s.return_type()));
+            };
+        }
+
         self.states.insert(params.uri.to_string(), state_semantic);
+
+        if self.is_loaded.load(Ordering::Relaxed) {
+            return;
+        };
+        self.is_loaded.store(true, Ordering::Relaxed);
+        self.client
+            .log_message(MessageType::INFO, "loading addon")
+            .await;
 
         let Some((path, functions)) = addon::identify_addon(uri) else {
             return
@@ -462,6 +482,7 @@ async fn main() {
         functions: DashMap::new(),
         states: DashMap::new(),
         documents: DashMap::new(),
+        is_loaded: false.into(),
     })
     .finish();
 
