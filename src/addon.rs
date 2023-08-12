@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use dashmap::DashMap;
+use rayon::prelude::*;
 use ropey::Rope;
 use sqf;
 use sqf::analyzer::{Origin, Output, Parameter, State};
@@ -130,15 +131,20 @@ fn process_file(
 }
 
 pub fn process_addon(addon_path: PathBuf, functions: &Functions) -> (Signatures, Vec<Error>) {
+    let results = functions
+        .par_iter()
+        .filter_map(|(name, path)| {
+            let span = path.span;
+            let path = sqf::find_addon_path(&path.inner)?;
+
+            process_file(name.clone(), path, span, addon_path.clone(), functions)
+                .map(|x| (name.clone(), x))
+        })
+        .collect::<Vec<_>>();
+
     let mut errors = vec![];
     let mut signatures = Signatures::default();
-    for (name, path) in functions.iter() {
-        let span = path.span;
-        let Some(path) = sqf::find_addon_path(&path.inner) else {
-            continue
-        };
-
-        let Some((e, path, signature, return_type)) = process_file(name.clone(), path, span, addon_path.clone(), functions) else{ continue };
+    for (name, (e, path, signature, return_type)) in results {
         errors.extend(e);
         signatures.insert(name.clone(), (path, signature, return_type));
     }
@@ -147,15 +153,20 @@ pub fn process_addon(addon_path: PathBuf, functions: &Functions) -> (Signatures,
 }
 
 pub fn process_mission(addon_path: PathBuf, functions: &Functions) -> (Signatures, Vec<Error>) {
+    let results = functions
+        .par_iter()
+        .filter_map(|(name, path)| {
+            let span = path.span;
+            let path = sqf::find_mission_path(&path.inner)?;
+
+            process_file(name.clone(), path, span, addon_path.clone(), functions)
+                .map(|x| (name.clone(), x))
+        })
+        .collect::<Vec<_>>();
+
     let mut errors = vec![];
     let mut signatures = Signatures::default();
-    for (name, path) in functions.iter() {
-        let span = path.span;
-        let Some(path) = sqf::find_mission_path(&path.inner) else {
-            continue
-        };
-
-        let Some((e, path, signature, return_type)) = process_file(name.clone(), path, span, addon_path.clone(), functions) else { continue };
+    for (name, (e, path, signature, return_type)) in results {
         errors.extend(e);
         signatures.insert(name.clone(), (path, signature, return_type));
     }

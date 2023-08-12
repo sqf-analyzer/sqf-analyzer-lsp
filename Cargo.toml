@@ -11,6 +11,7 @@ tokio = { version = "1", features = ["io-std", "macros", "rt-multi-thread"] }
 tower-lsp = { version = "0.19.0", features = ["proposed"]}
 serde = { version = "1.0", features = ["derive"] }
 dashmap = "5.1.0"
+rayon = "*"
 
 sqf = { git = "https://github.com/sqf-analyzer/sqf-analyzer" }
 #sqf = { path = "../sqf" }
