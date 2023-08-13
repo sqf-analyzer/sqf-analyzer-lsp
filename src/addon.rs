@@ -7,7 +7,7 @@ use rayon::prelude::*;
 use ropey::Rope;
 use sqf;
 use sqf::analyzer::{Origin, Output, Parameter, State};
-use sqf::cpp::{analyze_addon, analyze_mission};
+use sqf::cpp::analyze_file;
 use sqf::span::{Span, Spanned};
 use sqf::types::Type;
 use tower_lsp::lsp_types::Url;
@@ -17,12 +17,12 @@ use crate::semantic_token::SemanticTokenLocation;
 
 pub type Signature = (Spanned<PathBuf>, Option<Vec<Parameter>>, Option<Type>);
 type Signatures = HashMap<Arc<str>, Signature>;
-type Functions = HashMap<Arc<str>, Spanned<PathBuf>>;
+type Functions = HashMap<Arc<str>, Spanned<String>>;
 
 pub fn identify_addon(url: &Url) -> Option<(PathBuf, Functions)> {
     let mut addon_path = url.to_file_path().ok()?;
     while addon_path.pop() {
-        let Ok((functions, errors)) = analyze_addon(addon_path.clone()) else {
+        let Ok((functions, errors)) = analyze_file(addon_path.join("config.cpp").clone()) else {
             continue
         };
         if !errors.is_empty() {
@@ -37,7 +37,7 @@ pub fn identify_addon(url: &Url) -> Option<(PathBuf, Functions)> {
 pub fn identify_mission(url: &Url) -> Option<(PathBuf, Functions)> {
     let mut addon_path = url.to_file_path().ok()?;
     while addon_path.pop() {
-        let Ok((functions, errors)) = analyze_mission(addon_path.clone()) else {
+        let Ok((functions, errors)) = analyze_file(addon_path.join("description.ext").clone()) else {
             continue
         };
         if !errors.is_empty() {
@@ -131,33 +131,23 @@ fn process_file(
 }
 
 pub fn process_addon(addon_path: PathBuf, functions: &Functions) -> (Signatures, Vec<Error>) {
-    let results = functions
-        .par_iter()
-        .filter_map(|(name, path)| {
-            let span = path.span;
-            let path = sqf::find_addon_path(&path.inner)?;
-
-            process_file(name.clone(), path, span, addon_path.clone(), functions)
-                .map(|x| (name.clone(), x))
-        })
-        .collect::<Vec<_>>();
-
-    let mut errors = vec![];
-    let mut signatures = Signatures::default();
-    for (name, (e, path, signature, return_type)) in results {
-        errors.extend(e);
-        signatures.insert(name.clone(), (path, signature, return_type));
-    }
-
-    (signatures, errors)
+    process(addon_path, functions, "config.cpp")
 }
 
 pub fn process_mission(addon_path: PathBuf, functions: &Functions) -> (Signatures, Vec<Error>) {
+    process(addon_path, functions, "description.ext")
+}
+
+fn process(
+    addon_path: PathBuf,
+    functions: &Functions,
+    file_name: &'static str,
+) -> (Signatures, Vec<Error>) {
     let results = functions
         .par_iter()
         .filter_map(|(name, path)| {
             let span = path.span;
-            let path = sqf::find_mission_path(&path.inner)?;
+            let path = sqf::get_path(&path.inner, addon_path.join(file_name)).ok()?;
 
             process_file(name.clone(), path, span, addon_path.clone(), functions)
                 .map(|x| (name.clone(), x))
