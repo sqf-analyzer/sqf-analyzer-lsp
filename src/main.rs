@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use sqf::analyzer::{Origin, Output};
+use sqf::error::Error;
+use sqf::span::Spanned;
 use sqf_analyzer_server::{addon, hover};
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::notification::Notification;
@@ -315,18 +317,7 @@ impl Backend {
 
         let diagnostics = errors
             .into_iter()
-            .filter_map(|item| {
-                let (message, span) = (item.inner, item.span);
-
-                || -> Option<Diagnostic> {
-                    let start_position = offset_to_position(span.0, &rope)?;
-                    let end_position = offset_to_position(span.1, &rope)?;
-                    Some(Diagnostic::new_simple(
-                        Range::new(start_position, end_position),
-                        message,
-                    ))
-                }()
-            })
+            .filter_map(|item| to_diagnostic(item, &rope))
             .collect::<Vec<_>>();
 
         self.client
@@ -383,18 +374,18 @@ impl Backend {
 
         let diagnostics = errors
             .into_iter()
-            .filter_map(|item| {
-                let (message, span) = (item.inner, item.span);
-
-                let start_position = offset_to_position(span.0, &rope)?;
-                let end_position = offset_to_position(span.1, &rope)?;
-                Some((
-                    item.url,
-                    Diagnostic::new_simple(Range::new(start_position, end_position), message),
-                ))
-            })
             // filter the current file because it may have not been saved and thus cannot be analyzed
-            .filter(|x| x.0 != params.uri)
+            .filter(|x| x.url != params.uri)
+            .filter_map(|item| {
+                to_diagnostic(
+                    Spanned {
+                        inner: item.inner,
+                        span: item.span,
+                    },
+                    &rope,
+                )
+                .map(|x| (item.url, x))
+            })
             .fold(BTreeMap::<_, Vec<_>>::new(), |mut acc, (a, b)| {
                 acc.entry(a).or_default().push(b);
                 acc
@@ -493,6 +484,21 @@ impl Backend {
 
         Some(items.chain(params).collect())
     }
+}
+
+fn to_diagnostic(item: Error, rope: &Rope) -> Option<Diagnostic> {
+    let (message, span) = (item.inner, item.span);
+    let start_position = offset_to_position(span.0, rope)?;
+    let end_position = offset_to_position(span.1, rope)?;
+    Some(Diagnostic::new(
+        Range::new(start_position, end_position),
+        None,
+        None,
+        Some("sqf-analyzer".into()),
+        message,
+        None,
+        None,
+    ))
 }
 
 #[tokio::main]
