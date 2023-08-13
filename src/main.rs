@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use sqf::analyzer::{Origin, Output};
-use sqf_analyzer_server::addon;
+use sqf_analyzer_server::{addon, hover};
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::notification::Notification;
 use tower_lsp::lsp_types::*;
@@ -80,6 +80,7 @@ impl LanguageServer for Backend {
                 definition_provider: Some(OneOf::Left(true)),
                 references_provider: Some(OneOf::Left(false)),
                 rename_provider: Some(OneOf::Left(false)),
+                hover_provider: Some(true.into()),
                 ..ServerCapabilities::default()
             },
         })
@@ -133,6 +134,11 @@ impl LanguageServer for Backend {
         self.client
             .log_message(MessageType::INFO, "file closed!")
             .await;
+    }
+
+    async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
+        self.client.log_message(MessageType::INFO, "hover").await;
+        Ok(self.hover(params))
     }
 
     async fn goto_definition(
@@ -264,7 +270,7 @@ impl Backend {
     fn get_definition(&self, params: GotoDefinitionParams) -> Option<GotoDefinitionResponse> {
         let uri = params.text_document_position_params.text_document.uri;
         self.states.get(uri.as_str()).and_then(|state| {
-            let rope = self.documents.get(uri.as_str()).unwrap();
+            let rope = self.documents.get(uri.as_str())?;
             let offset = position_to_offset(params.text_document_position_params.position, &rope)?;
 
             let def = definition::get_definition(&state.as_ref()?.0, offset);
@@ -402,13 +408,29 @@ impl Backend {
         }
     }
 
+    fn hover(&self, params: HoverParams) -> Option<Hover> {
+        let uri = params.text_document_position_params.text_document.uri;
+
+        let rope = self.documents.get(uri.as_str())?;
+
+        let state = self.states.get(uri.as_str())?;
+        let state = &state.as_ref()?.0;
+
+        let offset = position_to_offset(params.text_document_position_params.position, &rope)?;
+
+        hover::hover(state, offset).map(|explanation| Hover {
+            contents: HoverContents::Markup(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value: explanation.to_string(),
+            }),
+            range: None,
+        })
+    }
+
     fn inlay(&self, params: tower_lsp::lsp_types::InlayHintParams) -> Option<Vec<InlayHint>> {
         let uri = &params.text_document.uri;
 
-        let document = match self.documents.get(uri.as_str()) {
-            Some(rope) => rope,
-            None => return None,
-        };
+        let document = self.documents.get(uri.as_str())?;
 
         let state = self.states.get(uri.as_str())?;
         let state = &state.as_ref()?.0;
