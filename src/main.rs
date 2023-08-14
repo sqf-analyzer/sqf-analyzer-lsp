@@ -1,3 +1,4 @@
+use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -7,7 +8,7 @@ use ropey::Rope;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use sqf::analyzer::{Origin, Output};
+use sqf::analyzer::{Origin, State};
 use sqf::error::Error;
 use sqf_analyzer_server::{addon, hover};
 use tower_lsp::jsonrpc::Result;
@@ -15,18 +16,24 @@ use tower_lsp::lsp_types::notification::Notification;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
-use sqf_analyzer_server::{
-    addon::Signature, analyze::compute, definition, semantic_token::LEGEND_TYPE,
-};
+use sqf_analyzer_server::semantic_token::SemanticTokenLocation;
+use sqf_analyzer_server::{analyze::compute, definition, semantic_token::LEGEND_TYPE};
+
+type States = DashMap<String, (State, Vec<SemanticTokenLocation>)>;
 
 #[derive(Debug)]
 struct Backend {
     client: Client,
-    states: addon::States,
-    functions: DashMap<Arc<str>, Signature>, // addon functions defined in config.cpp (name, path)
-    //globals: DashMap<Arc<str>, Span>,        // addon functions defined in config.cpp (name, path)
+    states: States,
+    functions: DashMap<Arc<str>, Url>, // addon functions defined in config.cpp (name, path)
     documents: DashMap<String, Rope>,
     is_loaded: AtomicBool,
+}
+
+fn find_function_name(map: &DashMap<Arc<str>, Url>, path: &str) -> Option<Arc<str>> {
+    let url = Url::from_str(path).ok()?;
+    map.iter()
+        .find_map(|x| (x.value() == &url).then_some(x.key().clone()))
 }
 
 #[tower_lsp::async_trait]
@@ -162,7 +169,7 @@ impl LanguageServer for Backend {
         let uri = params.text_document.uri.as_str();
         let semantic_tokens = || -> Option<Vec<SemanticToken>> {
             let may = self.states.get(uri)?;
-            let im_complete_tokens = &may.as_ref()?.1;
+            let im_complete_tokens = &may.1;
             let rope = self.documents.get(uri)?;
             let mut pre_line = 0;
             let mut pre_start = 0;
@@ -274,7 +281,7 @@ impl Backend {
             let rope = self.documents.get(uri.as_str())?;
             let offset = position_to_offset(params.text_document_position_params.position, &rope)?;
 
-            let def = definition::get_definition(&state.as_ref()?.0, offset);
+            let def = definition::get_definition(&state.0, offset);
 
             def.and_then(|origin| match origin {
                 Origin::File(span) => {
@@ -285,13 +292,12 @@ impl Backend {
                     )))
                 }
                 Origin::External(origin, span) => self.functions.get(&origin).map(|path| {
-                    let uri = Url::from_file_path(&path.0.inner).unwrap();
                     let range = self
                         .documents
-                        .get(uri.as_str())
+                        .get(path.value().as_str())
                         .and_then(|rope| span_to_range(span?, &rope))
                         .unwrap_or_default();
-                    GotoDefinitionResponse::Scalar(Location::new(uri, range))
+                    GotoDefinitionResponse::Scalar(Location::new(path.value().clone(), range))
                 }),
             })
         })
@@ -307,7 +313,7 @@ impl Backend {
             .log_message(MessageType::INFO, "loading mission or addon")
             .await;
 
-        let (signatures, originals) = if let Some((path, functions)) = addon::identify_addon(uri) {
+        let (states, originals) = if let Some((path, functions)) = addon::identify_addon(uri) {
             self.client
                 .log_message(
                     MessageType::INFO,
@@ -331,8 +337,11 @@ impl Backend {
         };
 
         self.functions.clear();
-        for (a, b) in signatures {
-            self.functions.insert(a, b);
+        for (path, (function_name, state_semantic)) in states {
+            if let Ok(url) = Url::from_file_path(path) {
+                self.functions.insert(function_name, url.clone());
+                self.states.insert(url.to_string(), state_semantic);
+            }
         }
 
         let diagnostics = originals
@@ -363,19 +372,19 @@ impl Backend {
 
         let uri = &params.uri;
         let rope = ropey::Rope::from_str(&params.text);
-        self.documents.insert(params.uri.to_string(), rope.clone());
+        let key = uri.to_string();
+        self.documents.insert(key.clone(), rope.clone());
 
-        let origins = self.functions.iter().map(|x| {
-            (
-                x.key().clone(),
-                (
-                    Origin::External(x.key().clone(), None),
-                    Some(Output::Code(x.value().1.clone(), x.value().2)),
-                ),
-            )
-        });
+        let mission = self
+            .states
+            .iter()
+            .filter(|x| x.key().as_ref() != key)
+            .filter_map(|x| find_function_name(&self.functions, x.key()).map(move |name| (name, x)))
+            .flat_map(|(name, x)| x.0.globals(name))
+            .collect();
+
         let path = uri.to_file_path().expect("utf-8 path");
-        let s = compute(&params.text, path.clone(), origins);
+        let s = compute(&params.text, path.clone(), mission);
 
         let (state_semantic, errors) = match s {
             Ok((state, semantic, errors)) => (Some((state, semantic)), errors),
@@ -391,17 +400,9 @@ impl Backend {
             .publish_diagnostics(params.uri.clone(), diagnostics, Some(params.version))
             .await;
 
-        let key = self.functions.iter().find_map(|x| {
-            (x.value().0.inner == path).then_some((x.key().clone(), x.value().0.clone()))
-        });
-        if let Some((name, path)) = key {
-            if let Some((s, _)) = &state_semantic {
-                self.functions
-                    .insert(name, (path, s.signature().cloned(), s.return_type()));
-            };
+        if let Some(state_semantic) = state_semantic {
+            self.states.insert(params.uri.to_string(), state_semantic);
         }
-
-        self.states.insert(params.uri.to_string(), state_semantic);
     }
 
     fn hover(&self, params: HoverParams) -> Option<Hover> {
@@ -409,8 +410,7 @@ impl Backend {
 
         let rope = self.documents.get(uri.as_str())?;
 
-        let state = self.states.get(uri.as_str())?;
-        let state = &state.as_ref()?.0;
+        let state = &self.states.get(uri.as_str())?.0;
 
         let offset = position_to_offset(params.text_document_position_params.position, &rope)?;
 
@@ -428,8 +428,7 @@ impl Backend {
 
         let document = self.documents.get(uri.as_str())?;
 
-        let state = self.states.get(uri.as_str())?;
-        let state = &state.as_ref()?.0;
+        let state = &self.states.get(uri.as_str())?.0;
 
         let items = state
             .types
@@ -515,9 +514,9 @@ async fn main() {
 
     let (service, socket) = LspService::build(|client| Backend {
         client,
-        functions: DashMap::new(),
-        states: DashMap::new(),
-        documents: DashMap::new(),
+        functions: Default::default(),
+        states: Default::default(),
+        documents: Default::default(),
         is_loaded: false.into(),
     })
     .finish();

@@ -2,11 +2,9 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use dashmap::DashMap;
 use rayon::prelude::*;
-use ropey::Rope;
 use sqf;
-use sqf::analyzer::{Origin, Output, Parameter, State};
+use sqf::analyzer::{Origin, Output, State};
 use sqf::cpp::analyze_file;
 use sqf::error::Error;
 use sqf::span::{Span, Spanned};
@@ -16,8 +14,6 @@ use tower_lsp::lsp_types::Url;
 use crate::analyze::compute;
 use crate::semantic_token::SemanticTokenLocation;
 
-pub type Signature = (Spanned<PathBuf>, Option<Vec<Parameter>>, Option<Type>);
-type Signatures = HashMap<Arc<str>, Signature>;
 type Functions = HashMap<Arc<str>, Spanned<String>>;
 
 pub fn identify_addon(url: &Url) -> Option<(PathBuf, Functions)> {
@@ -50,72 +46,50 @@ pub fn identify_mission(url: &Url) -> Option<(PathBuf, Functions)> {
     None
 }
 
-pub type Documents = DashMap<String, Rope>;
-pub type States = DashMap<String, Option<(State, Vec<SemanticTokenLocation>)>>;
-
 type R = (
     Option<String>,
     Vec<Error>,
-    Spanned<PathBuf>,
-    Option<Vec<Parameter>>,
-    Option<Type>,
+    Option<(State, Vec<SemanticTokenLocation>)>,
 );
 
-fn process_file(
-    function_name: Arc<str>,
-    path: PathBuf,
-    functions_path: PathBuf,
-    span: Span,
-    functions: &Functions,
-) -> R {
+fn process_file(function_name: Arc<str>, path: PathBuf, span: Span, functions: &Functions) -> R {
     let mut errors = vec![];
     let Ok(content) = std::fs::read_to_string(&path) else {
-        //let url = Url::from_file_path(addon_path.join("config.cpp")).expect("todo: non-utf8 paths");
         errors.push(Error {
             inner: format!("The function \"{}\" is defined but the file \"{}\" does not exist", function_name, path.display()),
             span,
         });
-        return (None, errors, Spanned {
-            inner: functions_path,
-            span,
-        }, None, None)
+        return (None, errors, None)
     };
 
-    let origins = functions.iter().map(|(k, _)| {
-        (
-            k.clone(),
+    let origins = functions
+        .iter()
+        .map(|(k, _)| {
             (
-                Origin::External(k.clone(), None),
-                Some(Output::Type(Type::Code)),
-            ),
-        )
-    });
-    let (state, _, new_errors) = match compute(&content, path.clone(), origins) {
+                k.clone(),
+                (
+                    Origin::External(k.clone(), None),
+                    Some(Output::Type(Type::Code)),
+                ),
+            )
+        })
+        .collect();
+    let (state, semantic_state, new_errors) = match compute(&content, path, origins) {
         Ok(a) => a,
         Err(e) => {
             errors.push(e);
-            return (
-                Some(content),
-                errors,
-                Spanned { inner: path, span },
-                None,
-                None,
-            );
+            return (Some(content), errors, None);
         }
     };
 
     errors.extend(new_errors);
 
-    (
-        Some(content),
-        errors,
-        Spanned { inner: path, span },
-        state.signature().cloned(),
-        state.return_type(),
-    )
+    (Some(content), errors, Some((state, semantic_state)))
 }
 
-type R1 = (Signatures, HashMap<PathBuf, (String, Vec<Error>)>);
+type R2 = HashMap<PathBuf, (Arc<str>, (State, Vec<SemanticTokenLocation>))>;
+
+type R1 = (R2, HashMap<PathBuf, (String, Vec<Error>)>);
 
 pub fn process_addon(addon_path: PathBuf, functions: &Functions) -> R1 {
     process(addon_path, functions, "config.cpp")
@@ -134,22 +108,25 @@ fn process(addon_path: PathBuf, functions: &Functions, file_name: &'static str) 
             let path = sqf::get_path(&path.inner, functions_path.clone()).ok()?;
 
             Some((
+                path.clone(),
                 name.clone(),
-                process_file(name.clone(), path, functions_path.clone(), span, functions),
+                process_file(name.clone(), path, span, functions),
             ))
         })
         .collect::<Vec<_>>();
 
-    let mut signatures = Signatures::default();
+    let mut states: R2 = Default::default();
     let mut originals = HashMap::default(); // todo: remove this so we do not store all files
-    for (name, (content, errors, path, signature, return_type)) in results {
-        signatures.insert(name.clone(), (path.clone(), signature, return_type));
+    for (path, name, (content, errors, state)) in results {
+        if let Some(state) = state {
+            states.insert(path.clone(), (name.clone(), state));
+        }
         if let Some(content) = content {
-            originals.insert(path.inner, (content, errors));
+            originals.insert(path, (content, errors));
         } else if let Ok(content) = std::fs::read_to_string(&functions_path) {
             originals.insert(functions_path.clone(), (content, errors));
         }
     }
 
-    (signatures, originals)
+    (states, originals)
 }
