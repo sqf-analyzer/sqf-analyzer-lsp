@@ -72,7 +72,7 @@ fn process_file(
     span: Span,
     addon_path: PathBuf,
     functions: &Functions,
-) -> Option<R> {
+) -> R {
     let mut errors = vec![];
     let Ok(content) = std::fs::read_to_string(&path) else {
         let url = Url::from_file_path(addon_path.join("config.cpp")).expect("todo: non-utf8 paths");
@@ -81,16 +81,19 @@ fn process_file(
             span,
             url,
         });
-        return Some((errors, Spanned {
+        return (errors, Spanned {
             inner: path.clone(),
             span,
-        }, None, None))
+        }, None, None)
     };
 
     let origins = functions.iter().map(|(k, _)| {
         (
             k.clone(),
-            (Origin::External(k.clone()), Some(Output::Type(Type::Code))),
+            (
+                Origin::External(k.clone(), None),
+                Some(Output::Type(Type::Code)),
+            ),
         )
     });
     let (state, _, new_errors) = match compute(&content, path.clone(), origins) {
@@ -101,7 +104,7 @@ fn process_file(
                 span: e.span,
                 url: Url::from_file_path(&path).unwrap(),
             });
-            return Some((
+            return (
                 errors,
                 Spanned {
                     inner: path.clone(),
@@ -109,7 +112,7 @@ fn process_file(
                 },
                 None,
                 None,
-            ));
+            );
         }
     };
 
@@ -119,7 +122,7 @@ fn process_file(
         url: Url::from_file_path(&path).unwrap(),
     }));
 
-    Some((
+    (
         errors,
         Spanned {
             inner: path.clone(),
@@ -127,7 +130,7 @@ fn process_file(
         },
         state.signature().cloned(),
         state.return_type(),
-    ))
+    )
 }
 
 pub fn process_addon(addon_path: PathBuf, functions: &Functions) -> (Signatures, Vec<Error>) {
@@ -149,8 +152,10 @@ fn process(
             let span = path.span;
             let path = sqf::get_path(&path.inner, addon_path.join(file_name)).ok()?;
 
-            process_file(name.clone(), path, span, addon_path.clone(), functions)
-                .map(|x| (name.clone(), x))
+            Some((
+                name.clone(),
+                process_file(name.clone(), path, span, addon_path.clone(), functions),
+            ))
         })
         .collect::<Vec<_>>();
 
