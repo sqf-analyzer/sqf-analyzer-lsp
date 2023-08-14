@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -10,7 +9,6 @@ use serde_json::Value;
 
 use sqf::analyzer::{Origin, Output};
 use sqf::error::Error;
-use sqf::span::Spanned;
 use sqf_analyzer_server::{addon, hover};
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::notification::Notification;
@@ -26,6 +24,7 @@ struct Backend {
     client: Client,
     states: addon::States,
     functions: DashMap<Arc<str>, Signature>, // addon functions defined in config.cpp (name, path)
+    //globals: DashMap<Arc<str>, Span>,        // addon functions defined in config.cpp (name, path)
     documents: DashMap<String, Rope>,
     is_loaded: AtomicBool,
 }
@@ -285,15 +284,83 @@ impl Backend {
                         range,
                     )))
                 }
-                Origin::External(origin) => self.functions.get(&origin).map(|path| {
+                Origin::External(origin, span) => self.functions.get(&origin).map(|path| {
                     let uri = Url::from_file_path(&path.0.inner).unwrap();
-                    GotoDefinitionResponse::Scalar(Location::new(uri, Range::default()))
+                    let range = self
+                        .documents
+                        .get(uri.as_str())
+                        .and_then(|rope| span_to_range(span?, &rope))
+                        .unwrap_or_default();
+                    GotoDefinitionResponse::Scalar(Location::new(uri, range))
                 }),
             })
         })
     }
 
+    /// Loads the project for the first time, publishing any diagnostics it can find during the process
+    async fn load_project(&self, uri: &Url, version: i32) {
+        if self.is_loaded.load(Ordering::Relaxed) {
+            return;
+        };
+        self.is_loaded.store(true, Ordering::Relaxed);
+        self.client
+            .log_message(MessageType::INFO, "loading mission or addon")
+            .await;
+
+        let (signatures, originals) = if let Some((path, functions)) = addon::identify_addon(uri) {
+            self.client
+                .log_message(
+                    MessageType::INFO,
+                    format!("Found addon with {} functions.", functions.len()),
+                )
+                .await;
+            addon::process_addon(path, &functions)
+        } else if let Some((path, functions)) = addon::identify_mission(uri) {
+            self.client
+                .log_message(
+                    MessageType::INFO,
+                    format!("Found mission with {} functions.", functions.len()),
+                )
+                .await;
+            addon::process_mission(path, &functions)
+        } else {
+            self.client
+                .log_message(MessageType::INFO, "neither mission nor addon found")
+                .await;
+            return;
+        };
+
+        self.functions.clear();
+        for (a, b) in signatures {
+            self.functions.insert(a, b);
+        }
+
+        let diagnostics = originals
+            .into_iter()
+            // convert path to url. This is likely never filtered since originals only contain files that we could open
+            .filter_map(|x| Url::from_file_path(x.0).ok().map(|url| (url, x.1)))
+            // filter the current file because it may have not been saved and thus cannot be analyzed
+            .filter(|(url, _)| url != uri)
+            .map(|(url, (content, errors))| {
+                let rope = Rope::from_str(&content);
+                let errors = errors
+                    .into_iter()
+                    .filter_map(|error| to_diagnostic(error, &rope))
+                    .collect::<Vec<_>>();
+                (url, errors)
+            });
+
+        // todo: use futures join to push them concurrently
+        for (url, diagnostics) in diagnostics {
+            self.client
+                .publish_diagnostics(url, diagnostics, Some(version))
+                .await;
+        }
+    }
+
     async fn on_change(&self, params: TextDocumentItem) {
+        self.load_project(&params.uri, params.version).await;
+
         let uri = &params.uri;
         let rope = ropey::Rope::from_str(&params.text);
         self.documents.insert(params.uri.to_string(), rope.clone());
@@ -302,7 +369,7 @@ impl Backend {
             (
                 x.key().clone(),
                 (
-                    Origin::External(x.key().clone()),
+                    Origin::External(x.key().clone(), None),
                     Some(Output::Code(x.value().1.clone(), x.value().2)),
                 ),
             )
@@ -335,68 +402,6 @@ impl Backend {
         }
 
         self.states.insert(params.uri.to_string(), state_semantic);
-
-        if self.is_loaded.load(Ordering::Relaxed) {
-            return;
-        };
-        self.is_loaded.store(true, Ordering::Relaxed);
-        self.client
-            .log_message(MessageType::INFO, "loading mission or addon")
-            .await;
-
-        let (signatures, errors) = if let Some((path, functions)) = addon::identify_addon(uri) {
-            self.client
-                .log_message(
-                    MessageType::INFO,
-                    format!("Found addon with {} functions.", functions.len()),
-                )
-                .await;
-            addon::process_addon(path, &functions)
-        } else if let Some((path, functions)) = addon::identify_mission(uri) {
-            self.client
-                .log_message(
-                    MessageType::INFO,
-                    format!("Found mission with {} functions.", functions.len()),
-                )
-                .await;
-            addon::process_mission(path, &functions)
-        } else {
-            self.client
-                .log_message(MessageType::INFO, "neither mission nor addon found")
-                .await;
-            return;
-        };
-
-        self.functions.clear();
-        for (a, b) in signatures {
-            self.functions.insert(a, b);
-        }
-
-        let diagnostics = errors
-            .into_iter()
-            // filter the current file because it may have not been saved and thus cannot be analyzed
-            .filter(|x| x.url != params.uri)
-            .filter_map(|item| {
-                to_diagnostic(
-                    Spanned {
-                        inner: item.inner,
-                        span: item.span,
-                    },
-                    &rope,
-                )
-                .map(|x| (item.url, x))
-            })
-            .fold(BTreeMap::<_, Vec<_>>::new(), |mut acc, (a, b)| {
-                acc.entry(a).or_default().push(b);
-                acc
-            });
-
-        // todo: use futures join to push them concurrently
-        for (item, diagnostics) in diagnostics {
-            self.client
-                .publish_diagnostics(item, diagnostics, Some(params.version))
-                .await;
-        }
     }
 
     fn hover(&self, params: HoverParams) -> Option<Hover> {

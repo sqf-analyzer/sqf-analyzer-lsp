@@ -13,6 +13,6 @@ serde = { version = "1.0", features = ["derive"] }
 dashmap = "5.1.0"
 rayon = "*"
 
-sqf = { git = "https://github.com/sqf-analyzer/sqf-analyzer" }
-#sqf = { path = "../sqf" }
+#sqf = { git = "https://github.com/sqf-analyzer/sqf-analyzer" }
+sqf = { path = "../sqf" }
 lazy_static = "*"
