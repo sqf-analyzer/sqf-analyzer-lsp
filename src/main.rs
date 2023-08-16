@@ -384,9 +384,8 @@ impl Backend {
             .collect();
 
         let path = uri.to_file_path().expect("utf-8 path");
-        let s = compute(&params.text, path.clone(), mission);
 
-        let (state_semantic, errors) = match s {
+        let (state_semantic, errors) = match compute(&params.text, path.clone(), mission) {
             Ok((state, semantic, errors)) => (Some((state, semantic)), errors),
             Err(e) => (None, vec![e]),
         };

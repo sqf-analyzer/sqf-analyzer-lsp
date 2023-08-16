@@ -7,6 +7,7 @@ use sqf;
 use sqf::analyzer::{Origin, Output, State};
 use sqf::cpp::analyze_file;
 use sqf::error::Error;
+use sqf::preprocessor::Configuration;
 use sqf::span::{Span, Spanned};
 use sqf::types::Type;
 use tower_lsp::lsp_types::Url;
@@ -19,7 +20,8 @@ type Functions = HashMap<Arc<str>, Spanned<String>>;
 pub fn identify_addon(url: &Url) -> Option<(PathBuf, Functions)> {
     let mut addon_path = url.to_file_path().ok()?;
     while addon_path.pop() {
-        let Ok((functions, errors)) = analyze_file(addon_path.join("config.cpp").clone()) else {
+        let configuration = Configuration::with_path(addon_path.join("config.cpp"));
+        let Ok((functions, errors)) = analyze_file(configuration) else {
             continue
         };
         if !errors.is_empty() {
@@ -34,7 +36,8 @@ pub fn identify_addon(url: &Url) -> Option<(PathBuf, Functions)> {
 pub fn identify_mission(url: &Url) -> Option<(PathBuf, Functions)> {
     let mut addon_path = url.to_file_path().ok()?;
     while addon_path.pop() {
-        let Ok((functions, errors)) = analyze_file(addon_path.join("description.ext").clone()) else {
+        let configuration = Configuration::with_path(addon_path.join("description.ext"));
+        let Ok((functions, errors)) = analyze_file(configuration) else {
             continue
         };
         if !errors.is_empty() {
@@ -101,11 +104,13 @@ pub fn process_mission(addon_path: PathBuf, functions: &Functions) -> R1 {
 
 fn process(addon_path: PathBuf, functions: &Functions, file_name: &'static str) -> R1 {
     let functions_path = addon_path.join(file_name);
+    let configuration = Configuration::with_path(functions_path.clone());
     let results = functions
         .par_iter()
         .filter_map(|(name, path)| {
             let span = path.span;
-            let path = sqf::get_path(&path.inner, functions_path.clone()).ok()?;
+
+            let path = sqf::get_path(&path.inner, &configuration).ok()?;
 
             Some((
                 path.clone(),
