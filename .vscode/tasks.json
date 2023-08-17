@@ -4,32 +4,18 @@
 	"version": "2.0.0",
 	"tasks": [
 		{
-			"type": "npm",
-			"script": "compile",
+			"label": "Build Extension",
 			"group": "build",
-			"presentation": {
-				"panel": "dedicated",
-				"reveal": "never"
-			},
-			"problemMatcher": [
-				"$tsc"
-			]
-		},
-		{
 			"type": "npm",
-			"script": "watch",
-			"isBackground": true,
-			"group": {
-				"kind": "build",
-				"isDefault": true
+			"script": "build-base",
+			"path": "client/",
+			"problemMatcher": {
+				"base": "$tsc",
+				"fileLocation": [
+					"relative",
+					"${workspaceFolder}/editors/code/"
+				]
 			},
-			"presentation": {
-				"panel": "dedicated",
-				"reveal": "never"
-			},
-			"problemMatcher": [
-				"$tsc-watch"
-			]
-		}
+		},
 	]
 }

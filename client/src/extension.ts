@@ -75,6 +75,7 @@ export async function activate(context: ExtensionContext) {
     synchronize: {
       // Notify the server about file changes to '.clientrc files contained in the workspace
       fileEvents: workspace.createFileSystemWatcher("**/.clientrc"),
+      configurationSection: "sqf-analyzer"
     },
     traceOutputChannel,
   };

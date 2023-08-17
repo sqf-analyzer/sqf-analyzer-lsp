@@ -4,6 +4,7 @@ use sqf::{
     analyzer::{MissionNamespace, BINARY, NULLARY, UNARY},
     preprocessor::Ast,
     span::Span,
+    UncasedStr,
 };
 use tower_lsp::lsp_types::SemanticTokenType;
 
@@ -101,12 +102,9 @@ fn infer_st(token: &str, mission: &MissionNamespace) -> SemanticTokenType {
         return SemanticTokenType::NUMBER;
     }
 
-    let lower_cased = token.to_lowercase(); // SQF is case insensitive
-    let lower_cased = lower_cased.as_str();
-    if BINARY.contains_key(lower_cased)
-        || UNARY.contains_key(lower_cased)
-        || NULLARY.contains_key(lower_cased)
-    {
+    let token = UncasedStr::new(token);
+
+    if BINARY.contains_key(token) || UNARY.contains_key(token) || NULLARY.contains_key(token) {
         SemanticTokenType::KEYWORD
     } else if let Some((_, Some(type_))) = mission.get(token) {
         match type_.type_() {

@@ -10,6 +10,7 @@ use serde_json::Value;
 
 use sqf::analyzer::{Origin, State};
 use sqf::error::Error;
+use sqf::UncasedStr;
 use sqf_analyzer_server::{addon, hover};
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::notification::Notification;
@@ -25,12 +26,13 @@ type States = DashMap<String, (State, Vec<SemanticTokenLocation>)>;
 struct Backend {
     client: Client,
     states: States,
-    functions: DashMap<Arc<str>, Url>, // addon functions defined in config.cpp (name, path)
+    functions: DashMap<Arc<UncasedStr>, Url>, // addon functions defined in config.cpp (name, path)
     documents: DashMap<String, Rope>,
+    undefined_variables_are_error: AtomicBool,
     is_loaded: AtomicBool,
 }
 
-fn find_function_name(map: &DashMap<Arc<str>, Url>, path: &str) -> Option<Arc<str>> {
+fn find_function_name(map: &DashMap<Arc<UncasedStr>, Url>, path: &str) -> Option<Arc<UncasedStr>> {
     let url = Url::from_str(path).ok()?;
     map.iter()
         .find_map(|x| (x.value() == &url).then_some(x.key().clone()))
@@ -93,6 +95,7 @@ impl LanguageServer for Backend {
             },
         })
     }
+
     async fn initialized(&self, _: InitializedParams) {
         self.client
             .log_message(MessageType::INFO, "initialized!")
@@ -138,6 +141,7 @@ impl LanguageServer for Backend {
             .log_message(MessageType::INFO, "file saved!")
             .await;
     }
+
     async fn did_close(&self, _: DidCloseTextDocumentParams) {
         self.client
             .log_message(MessageType::INFO, "file closed!")
@@ -218,10 +222,25 @@ impl LanguageServer for Backend {
         Ok(self.inlay(params))
     }
 
-    async fn did_change_configuration(&self, _: DidChangeConfigurationParams) {
+    async fn did_change_configuration(&self, params: DidChangeConfigurationParams) {
         self.client
-            .log_message(MessageType::INFO, "configuration changed!")
+            .log_message(MessageType::INFO, format!("{:?}", params.settings))
             .await;
+        let variables = params
+            .settings
+            .as_object()
+            .and_then(|x| x.get("sqf-analyzer"))
+            .and_then(|x| x.as_object())
+            .and_then(|x| x.get("server"))
+            .and_then(|x| x.as_object())
+            .and_then(|x| x.get("variables"))
+            .and_then(|x| x.as_bool())
+            .unwrap_or(false);
+        self.client
+            .log_message(MessageType::INFO, format!("{:?}", variables))
+            .await;
+        self.undefined_variables_are_error
+            .store(variables, Ordering::Relaxed);
     }
 
     async fn did_change_workspace_folders(&self, _: DidChangeWorkspaceFoldersParams) {
@@ -350,14 +369,27 @@ impl Backend {
             .filter_map(|x| Url::from_file_path(x.0).ok().map(|url| (url, x.1)))
             // filter the current file because it may have not been saved and thus cannot be analyzed
             .filter(|(url, _)| url != uri)
-            .map(|(url, (content, errors))| {
+            .flat_map(|(url, (content, errors))| {
                 let rope = Rope::from_str(&content);
-                let errors = errors
+                errors
                     .into_iter()
-                    .filter_map(|error| to_diagnostic(error, &rope))
-                    .collect::<Vec<_>>();
-                (url, errors)
-            });
+                    .filter_map(|error| {
+                        let origin = error
+                            .origin
+                            .clone()
+                            .and_then(|x| Url::from_file_path(x).ok())
+                            .unwrap_or_else(|| url.clone());
+                        to_diagnostic(error, &rope).map(|x| (origin, x))
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .fold(
+                std::collections::BTreeMap::<_, Vec<_>>::new(),
+                |mut acc, (a, b)| {
+                    acc.entry(a).or_default().push(b);
+                    acc
+                },
+            );
 
         // todo: use futures join to push them concurrently
         for (url, diagnostics) in diagnostics {
@@ -385,19 +417,37 @@ impl Backend {
 
         let path = uri.to_file_path().expect("utf-8 path");
 
-        let (state_semantic, errors) = match compute(&params.text, path.clone(), mission) {
-            Ok((state, semantic, errors)) => (Some((state, semantic)), errors),
-            Err(e) => (None, vec![e]),
-        };
+        let error_on_undefined = self.undefined_variables_are_error.load(Ordering::Relaxed);
+        let (state_semantic, errors) =
+            match compute(&params.text, path.clone(), mission, error_on_undefined) {
+                Ok((state, semantic, errors)) => (Some((state, semantic)), errors),
+                Err(e) => (None, vec![e]),
+            };
 
+        let url = params.uri.clone();
         let diagnostics = errors
             .into_iter()
-            .filter_map(|item| to_diagnostic(item, &rope))
-            .collect::<Vec<_>>();
+            .filter_map(|error| {
+                let origin = error
+                    .origin
+                    .clone()
+                    .and_then(|x| Url::from_file_path(x).ok())
+                    .unwrap_or_else(|| url.clone());
+                to_diagnostic(error, &rope).map(|x| (origin, x))
+            })
+            .fold(
+                std::collections::BTreeMap::<_, Vec<_>>::new(),
+                |mut acc, (a, b)| {
+                    acc.entry(a).or_default().push(b);
+                    acc
+                },
+            );
 
-        self.client
-            .publish_diagnostics(params.uri.clone(), diagnostics, Some(params.version))
-            .await;
+        for (url, diagnostics) in diagnostics {
+            self.client
+                .publish_diagnostics(url, diagnostics, Some(params.version))
+                .await;
+        }
 
         if let Some(state_semantic) = state_semantic {
             self.states.insert(params.uri.to_string(), state_semantic);
@@ -513,6 +563,7 @@ async fn main() {
 
     let (service, socket) = LspService::build(|client| Backend {
         client,
+        undefined_variables_are_error: false.into(),
         functions: Default::default(),
         states: Default::default(),
         documents: Default::default(),
