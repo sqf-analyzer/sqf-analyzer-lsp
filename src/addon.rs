@@ -21,13 +21,9 @@ pub fn identify_addon(url: &Url) -> Option<(PathBuf, Functions)> {
     let mut addon_path = url.to_file_path().ok()?;
     while addon_path.pop() {
         let configuration = Configuration::with_path(addon_path.join("config.cpp"));
-        let Ok((functions, errors)) = analyze_file(configuration) else {
+        let Ok((functions, _)) = analyze_file(configuration) else {
             continue
         };
-        if !errors.is_empty() {
-            return None;
-        }
-
         return Some((addon_path, functions));
     }
     None
@@ -37,13 +33,9 @@ pub fn identify_mission(url: &Url) -> Option<(PathBuf, Functions)> {
     let mut addon_path = url.to_file_path().ok()?;
     while addon_path.pop() {
         let configuration = Configuration::with_path(addon_path.join("description.ext"));
-        let Ok((functions, errors)) = analyze_file(configuration) else {
+        let Ok((functions, _)) = analyze_file(configuration) else {
             continue
         };
-        if !errors.is_empty() {
-            return None;
-        }
-
         return Some((addon_path, functions));
     }
     None
