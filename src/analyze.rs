@@ -1,9 +1,7 @@
-use std::path::PathBuf;
-
 use sqf::analyzer::{analyze, MissionNamespace, State};
 use sqf::error::Error;
 use sqf::parser::parse;
-use sqf::preprocessor::{AstIterator, Configuration};
+use sqf::preprocessor::AstIterator;
 
 use crate::semantic_token::{semantic_tokens, SemanticTokenLocation};
 
@@ -11,16 +9,23 @@ type Return = (State, Vec<SemanticTokenLocation>, Vec<Error>);
 
 pub fn compute(
     text: &str,
-    path: PathBuf,
+    configuration: sqf::analyzer::Configuration,
     mission: MissionNamespace,
     error_on_undefined: bool,
 ) -> Result<Return, Error> {
     let ast = sqf::preprocessor::parse(text)?;
     let semantic_tokens = semantic_tokens(&ast, &mission);
-    let iter = AstIterator::new(ast, Configuration::with_path(path.clone()));
+
+    let conf = sqf::preprocessor::Configuration {
+        path: configuration.file_path.clone(),
+        addons: configuration.addons.clone(),
+        ..Default::default()
+    };
+
+    let iter = AstIterator::new(ast, conf);
     let (ast, mut errors) = parse(iter);
     let mut state = State {
-        path,
+        configuration,
         ..Default::default()
     };
     state.settings.error_on_undefined = error_on_undefined;

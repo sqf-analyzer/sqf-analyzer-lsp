@@ -1,6 +1,7 @@
+use std::path::Path;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use dashmap::DashMap;
 
@@ -30,6 +31,7 @@ struct Backend {
     documents: DashMap<String, Rope>,
     undefined_variables_are_error: AtomicBool,
     is_loaded: AtomicBool,
+    addon_path: RwLock<Option<Arc<Path>>>,
 }
 
 fn find_function_name(map: &DashMap<Arc<UncasedStr>, Url>, path: &str) -> Option<Arc<UncasedStr>> {
@@ -332,28 +334,42 @@ impl Backend {
             .log_message(MessageType::INFO, "loading mission or addon")
             .await;
 
-        let (states, originals) = if let Some((path, functions)) = addon::identify_addon(uri) {
-            self.client
-                .log_message(
-                    MessageType::INFO,
-                    format!("Found addon with {} functions.", functions.len()),
-                )
-                .await;
-            addon::process_addon(path, &functions)
-        } else if let Some((path, functions)) = addon::identify_mission(uri) {
-            self.client
-                .log_message(
-                    MessageType::INFO,
-                    format!("Found mission with {} functions.", functions.len()),
-                )
-                .await;
-            addon::process_mission(path, &functions)
-        } else {
-            self.client
-                .log_message(MessageType::INFO, "neither mission nor addon found")
-                .await;
-            return;
-        };
+        let (addon_path, (states, originals)) =
+            if let Some((path, functions)) = addon::identify_addon(uri) {
+                self.client
+                    .log_message(
+                        MessageType::INFO,
+                        format!(
+                            "Found addon at \"{}\" with {} functions.",
+                            path.display(),
+                            functions.len()
+                        ),
+                    )
+                    .await;
+                (path.clone().into(), addon::process(path, &functions))
+            } else if let Some((path, functions)) = addon::identify_mission(uri) {
+                self.client
+                    .log_message(
+                        MessageType::INFO,
+                        format!(
+                            "Found mission at \"{}\" with {} functions.",
+                            path.display(),
+                            functions.len()
+                        ),
+                    )
+                    .await;
+                (path.clone().into(), addon::process(path, &functions))
+            } else {
+                self.client
+                    .log_message(MessageType::INFO, "neither mission nor addon found")
+                    .await;
+                return;
+            };
+
+        {
+            let mut w = self.addon_path.write().unwrap();
+            *w = Some(addon_path);
+        }
 
         self.functions.clear();
         for (path, (function_name, state_semantic)) in states {
@@ -416,10 +432,21 @@ impl Backend {
             .collect();
 
         let path = uri.to_file_path().expect("utf-8 path");
+        let configuration = sqf::analyzer::Configuration {
+            file_path: path.into(),
+            base_path: self
+                .addon_path
+                .read()
+                .unwrap()
+                .as_ref()
+                .map(|x| x.as_ref().to_owned())
+                .unwrap_or_default(),
+            ..Default::default()
+        };
 
         let error_on_undefined = self.undefined_variables_are_error.load(Ordering::Relaxed);
         let (state_semantic, errors) =
-            match compute(&params.text, path.clone(), mission, error_on_undefined) {
+            match compute(&params.text, configuration, mission, error_on_undefined) {
                 Ok((state, semantic, errors)) => (Some((state, semantic)), errors),
                 Err(e) => (None, vec![e]),
             };
@@ -564,10 +591,11 @@ async fn main() {
     let (service, socket) = LspService::build(|client| Backend {
         client,
         undefined_variables_are_error: false.into(),
+        is_loaded: false.into(),
         functions: Default::default(),
         states: Default::default(),
         documents: Default::default(),
-        is_loaded: false.into(),
+        addon_path: Default::default(),
     })
     .finish();
 
