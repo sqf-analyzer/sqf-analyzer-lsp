@@ -75,8 +75,7 @@ fn process_file(
             )
         })
         .collect();
-    let (state, semantic_state, new_errors) = match compute(&content, configuration, mission, false)
-    {
+    let (state, semantic_state, new_errors) = match compute(&content, configuration, mission) {
         Ok(a) => a,
         Err(e) => {
             errors.push(e);

@@ -3,7 +3,7 @@
 	"displayName": "sqf-analyzer",
 	"description": "SQF language support for Visual Studio Code",
 	"license": "MIT",
-	"version": "0.1.8",
+	"version": "0.1.9",
 	"icon": "icon.png",
 	"keywords": [
 		"sqf"
@@ -58,6 +58,11 @@
 				},
 				"sqf-analyzer.server.variables": {
 					"description": "Makes undefined variables be treated as errors",
+					"type": "boolean",
+					"default": false
+				},
+				"sqf-analyzer.server.private_variables_in_mission_are_error": {
+					"description": "Shows variables starting with underscore assigned to mission as error",
 					"type": "boolean",
 					"default": false
 				}

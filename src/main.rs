@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use sqf::analyzer::{Origin, State};
-use sqf::error::Error;
+use sqf::error::{Error, ErrorType};
 use sqf::UncasedStr;
 use sqf_analyzer_server::{addon, hover};
 use tower_lsp::jsonrpc::Result;
@@ -30,6 +30,7 @@ struct Backend {
     functions: DashMap<Arc<UncasedStr>, Url>, // addon functions defined in config.cpp (name, path)
     documents: DashMap<String, Rope>,
     undefined_variables_are_error: AtomicBool,
+    private_variables_in_mission_are_error: AtomicBool,
     is_loaded: AtomicBool,
     addon_path: RwLock<Option<Arc<Path>>>,
 }
@@ -238,10 +239,19 @@ impl LanguageServer for Backend {
             .and_then(|x| x.get("variables"))
             .and_then(|x| x.as_bool())
             .unwrap_or(false);
-        self.client
-            .log_message(MessageType::INFO, format!("{:?}", variables))
-            .await;
         self.undefined_variables_are_error
+            .store(variables, Ordering::Relaxed);
+        let variables = params
+            .settings
+            .as_object()
+            .and_then(|x| x.get("sqf-analyzer"))
+            .and_then(|x| x.as_object())
+            .and_then(|x| x.get("server"))
+            .and_then(|x| x.as_object())
+            .and_then(|x| x.get("private_variables_in_mission_are_error"))
+            .and_then(|x| x.as_bool())
+            .unwrap_or(false);
+        self.private_variables_in_mission_are_error
             .store(variables, Ordering::Relaxed);
     }
 
@@ -379,6 +389,11 @@ impl Backend {
             }
         }
 
+        let error_on_undefined = self.undefined_variables_are_error.load(Ordering::Relaxed);
+        let private_variables_in_mission_are_error = self
+            .private_variables_in_mission_are_error
+            .load(Ordering::Relaxed);
+
         let diagnostics = originals
             .into_iter()
             // convert path to url. This is likely never filtered since originals only contain files that we could open
@@ -389,6 +404,13 @@ impl Backend {
                 let rope = Rope::from_str(&content);
                 errors
                     .into_iter()
+                    .filter(|error| {
+                        error_on_undefined || (error.type_ != ErrorType::UndefinedVariable)
+                    })
+                    .filter(|error| {
+                        private_variables_in_mission_are_error
+                            || (error.type_ != ErrorType::PrivateAssignedToMission)
+                    })
                     .filter_map(|error| {
                         let origin = error
                             .origin
@@ -445,15 +467,22 @@ impl Backend {
         };
 
         let error_on_undefined = self.undefined_variables_are_error.load(Ordering::Relaxed);
-        let (state_semantic, errors) =
-            match compute(&params.text, configuration, mission, error_on_undefined) {
-                Ok((state, semantic, errors)) => (Some((state, semantic)), errors),
-                Err(e) => (None, vec![e]),
-            };
+        let private_variables_in_mission_are_error = self
+            .private_variables_in_mission_are_error
+            .load(Ordering::Relaxed);
+        let (state_semantic, errors) = match compute(&params.text, configuration, mission) {
+            Ok((state, semantic, errors)) => (Some((state, semantic)), errors),
+            Err(e) => (None, vec![e]),
+        };
 
         let url = params.uri.clone();
         let diagnostics = errors
             .into_iter()
+            .filter(|error| error_on_undefined || (error.type_ != ErrorType::UndefinedVariable))
+            .filter(|error| {
+                private_variables_in_mission_are_error
+                    || (error.type_ != ErrorType::PrivateAssignedToMission)
+            })
             .filter_map(|error| {
                 let origin = error
                     .origin
@@ -470,6 +499,11 @@ impl Backend {
                 },
             );
 
+        if diagnostics.is_empty() {
+            self.client
+                .publish_diagnostics(params.uri.clone(), vec![], Some(params.version))
+                .await;
+        }
         for (url, diagnostics) in diagnostics {
             self.client
                 .publish_diagnostics(url, diagnostics, Some(params.version))
@@ -567,7 +601,7 @@ impl Backend {
 }
 
 fn to_diagnostic(item: Error, rope: &Rope) -> Option<Diagnostic> {
-    let (message, span) = (item.inner, item.span);
+    let (message, span) = (item.type_.to_string(), item.span);
     let start_position = offset_to_position(span.0, rope)?;
     let end_position = offset_to_position(span.1, rope)?;
     Some(Diagnostic::new(
@@ -591,6 +625,7 @@ async fn main() {
     let (service, socket) = LspService::build(|client| Backend {
         client,
         undefined_variables_are_error: false.into(),
+        private_variables_in_mission_are_error: false.into(),
         is_loaded: false.into(),
         functions: Default::default(),
         states: Default::default(),

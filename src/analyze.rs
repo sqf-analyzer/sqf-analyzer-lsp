@@ -11,7 +11,6 @@ pub fn compute(
     text: &str,
     configuration: sqf::analyzer::Configuration,
     mission: MissionNamespace,
-    error_on_undefined: bool,
 ) -> Result<Return, Error> {
     let ast = sqf::preprocessor::parse(text)?;
     let semantic_tokens = semantic_tokens(&ast, &mission);
@@ -28,7 +27,6 @@ pub fn compute(
         configuration,
         ..Default::default()
     };
-    state.settings.error_on_undefined = error_on_undefined;
     state.namespace.mission = mission;
     analyze(&ast, &mut state);
     errors.extend(state.errors.clone());
