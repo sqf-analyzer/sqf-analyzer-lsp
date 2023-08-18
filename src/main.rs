@@ -1,5 +1,4 @@
 use std::path::Path;
-use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
@@ -21,24 +20,17 @@ use tower_lsp::{Client, LanguageServer, LspService, Server};
 use sqf_analyzer_server::semantic_token::SemanticTokenLocation;
 use sqf_analyzer_server::{analyze::compute, definition, semantic_token::LEGEND_TYPE};
 
-type States = DashMap<String, (State, Vec<SemanticTokenLocation>)>;
+type States = DashMap<String, ((State, Vec<SemanticTokenLocation>), Option<Arc<UncasedStr>>)>;
 
 #[derive(Debug)]
 struct Backend {
     client: Client,
     states: States,
-    functions: DashMap<Arc<UncasedStr>, Url>, // addon functions defined in config.cpp (name, path)
     documents: DashMap<String, Rope>,
     undefined_variables_are_error: AtomicBool,
     private_variables_in_mission_are_error: AtomicBool,
     is_loaded: AtomicBool,
     addon_path: RwLock<Option<Arc<Path>>>,
-}
-
-fn find_function_name(map: &DashMap<Arc<UncasedStr>, Url>, path: &str) -> Option<Arc<UncasedStr>> {
-    let url = Url::from_str(path).ok()?;
-    map.iter()
-        .find_map(|x| (x.value() == &url).then_some(x.key().clone()))
 }
 
 #[tower_lsp::async_trait]
@@ -175,8 +167,7 @@ impl LanguageServer for Backend {
             .await;
         let uri = params.text_document.uri.as_str();
         let semantic_tokens = || -> Option<Vec<SemanticToken>> {
-            let may = self.states.get(uri)?;
-            let im_complete_tokens = &may.1;
+            let im_complete_tokens = &self.states.get(uri)?.0 .1;
             let rope = self.documents.get(uri)?;
             let mut pre_line = 0;
             let mut pre_start = 0;
@@ -312,7 +303,7 @@ impl Backend {
             let rope = self.documents.get(uri.as_str())?;
             let offset = position_to_offset(params.text_document_position_params.position, &rope)?;
 
-            let def = definition::get_definition(&state.0, offset);
+            let def = definition::get_definition(&state.0 .0, offset);
 
             def.and_then(|origin| match origin {
                 Origin::File(span) => {
@@ -322,14 +313,15 @@ impl Backend {
                         range,
                     )))
                 }
-                Origin::External(origin, span) => self.functions.get(&origin).map(|path| {
+                Origin::External(path, span) => {
+                    let url = Url::from_file_path(path.as_ref()).ok()?;
                     let range = self
                         .documents
-                        .get(path.value().as_str())
+                        .get(url.as_str())
                         .and_then(|rope| span_to_range(span?, &rope))
                         .unwrap_or_default();
-                    GotoDefinitionResponse::Scalar(Location::new(path.value().clone(), range))
-                }),
+                    Some(GotoDefinitionResponse::Scalar(Location::new(url, range)))
+                }
             })
         })
     }
@@ -381,11 +373,10 @@ impl Backend {
             *w = Some(addon_path);
         }
 
-        self.functions.clear();
         for (path, (function_name, state_semantic)) in states {
             if let Ok(url) = Url::from_file_path(path) {
-                self.functions.insert(function_name, url.clone());
-                self.states.insert(url.to_string(), state_semantic);
+                self.states
+                    .insert(url.to_string(), (state_semantic, Some(function_name)));
             }
         }
 
@@ -449,8 +440,7 @@ impl Backend {
             .states
             .iter()
             .filter(|x| x.key().as_ref() != key)
-            .filter_map(|x| find_function_name(&self.functions, x.key()).map(move |name| (name, x)))
-            .flat_map(|(name, x)| x.0.globals(name))
+            .flat_map(|x| x.0 .0.globals(x.1.clone()))
             .collect();
 
         let path = uri.to_file_path().expect("utf-8 path");
@@ -511,7 +501,12 @@ impl Backend {
         }
 
         if let Some(state_semantic) = state_semantic {
-            self.states.insert(params.uri.to_string(), state_semantic);
+            let key = params.uri.to_string();
+            if let Some(mut e) = self.states.get_mut(&key) {
+                e.value_mut().0 = state_semantic;
+            } else {
+                self.states.insert(key, (state_semantic, None));
+            };
         }
     }
 
@@ -520,7 +515,7 @@ impl Backend {
 
         let rope = self.documents.get(uri.as_str())?;
 
-        let state = &self.states.get(uri.as_str())?.0;
+        let state = &self.states.get(uri.as_str())?.0 .0;
 
         let offset = position_to_offset(params.text_document_position_params.position, &rope)?;
 
@@ -538,7 +533,7 @@ impl Backend {
 
         let document = self.documents.get(uri.as_str())?;
 
-        let state = &self.states.get(uri.as_str())?.0;
+        let state = &self.states.get(uri.as_str())?.0 .0;
 
         let items = state
             .types
@@ -627,7 +622,6 @@ async fn main() {
         undefined_variables_are_error: false.into(),
         private_variables_in_mission_are_error: false.into(),
         is_loaded: false.into(),
-        functions: Default::default(),
         states: Default::default(),
         documents: Default::default(),
         addon_path: Default::default(),

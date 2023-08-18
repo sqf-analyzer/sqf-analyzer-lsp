@@ -6,10 +6,10 @@ use rayon::prelude::*;
 use sqf::analyzer::{Configuration, Origin, Output, State};
 use sqf::cpp::analyze_file;
 use sqf::error::Error;
-use sqf::preprocessor;
 use sqf::span::{Span, Spanned};
 use sqf::types::Type;
 use sqf::{self, UncasedStr};
+use sqf::{get_path, preprocessor};
 use tower_lsp::lsp_types::Url;
 
 use crate::analyze::compute;
@@ -65,14 +65,17 @@ fn process_file(
 
     let mission = functions
         .iter()
-        .map(|(k, _)| {
-            (
+        .filter_map(|(k, path)| {
+            let Ok(path) = get_path(&path.inner, &configuration.base_path, &configuration.addons) else {
+                return None
+            };
+            Some((
                 k.clone(),
                 (
-                    Origin::External(k.clone(), None),
+                    Origin::External(path, None),
                     Some(Output::Type(Type::Code)),
                 ),
-            )
+            ))
         })
         .collect();
     let (state, semantic_state, new_errors) = match compute(&content, configuration, mission) {
