@@ -305,7 +305,7 @@ impl Backend {
             .await;
 
         let (addon_path, (states, originals)) =
-            if let Some((path, functions)) = addon::identify_addon(uri) {
+            if let Some((path, functions)) = addon::identify(uri, "config.cpp") {
                 self.client
                     .log_message(
                         MessageType::INFO,
@@ -317,7 +317,7 @@ impl Backend {
                     )
                     .await;
                 (path.clone().into(), addon::process(path, &functions))
-            } else if let Some((path, functions)) = addon::identify_mission(uri) {
+            } else if let Some((path, functions)) = addon::identify(uri, "description.ext") {
                 self.client
                     .log_message(
                         MessageType::INFO,

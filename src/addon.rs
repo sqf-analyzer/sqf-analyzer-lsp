@@ -17,27 +17,14 @@ use crate::semantic_token::SemanticTokenLocation;
 
 type Functions = HashMap<Arc<UncasedStr>, Spanned<String>>;
 
-pub fn identify_addon(url: &Url) -> Option<(PathBuf, Functions)> {
+pub fn identify(url: &Url, name: &str) -> Option<(PathBuf, Functions)> {
     let mut addon_path = url.to_file_path().ok()?;
-    while addon_path.pop() {
-        let configuration = preprocessor::Configuration::with_path(addon_path.join("config.cpp"));
+    while addon_path.components().count() > 3 && addon_path.pop() {
+        let configuration = preprocessor::Configuration::with_path(addon_path.join(name));
         let Ok((functions, _)) = analyze_file(configuration) else {
             continue
         };
-        return Some((addon_path.join("config.cpp"), functions));
-    }
-    None
-}
-
-pub fn identify_mission(url: &Url) -> Option<(PathBuf, Functions)> {
-    let mut addon_path = url.to_file_path().ok()?;
-    while addon_path.pop() {
-        let configuration =
-            preprocessor::Configuration::with_path(addon_path.join("description.ext"));
-        let Ok((functions, _)) = analyze_file(configuration) else {
-            continue
-        };
-        return Some((addon_path.join("description.ext"), functions));
+        return Some((addon_path.join(name), functions));
     }
     None
 }
