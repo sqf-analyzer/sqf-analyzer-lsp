@@ -6,9 +6,9 @@ use rayon::prelude::*;
 use sqf::analyzer::{Configuration, Origin, Output, State};
 use sqf::cpp::analyze_file;
 use sqf::error::Error;
-use sqf::span::{Span, Spanned};
+use sqf::span::Spanned;
 use sqf::types::Type;
-use sqf::{self, UncasedStr};
+use sqf::{self, UncasedStr, MISSION_INIT_SCRIPTS};
 use sqf::{get_path, preprocessor};
 use tower_lsp::lsp_types::Url;
 
@@ -48,20 +48,8 @@ type R = (
     Option<(State, Vec<SemanticTokenLocation>)>,
 );
 
-fn process_file(
-    function_name: Arc<UncasedStr>,
-    configuration: Configuration,
-    span: Span,
-    functions: &Functions,
-) -> R {
+fn process_file(content: String, configuration: Configuration, functions: &Functions) -> R {
     let mut errors = vec![];
-    let Ok(content) = std::fs::read_to_string(&configuration.file_path) else {
-        errors.push(Error::new(
-            format!("The function \"{}\" is defined but the file \"{}\" does not exist", function_name, configuration.file_path.display()),
-            span,
-        ));
-        return (None, errors, None)
-    };
 
     let mission = functions
         .iter()
@@ -91,17 +79,63 @@ fn process_file(
     (Some(content), errors, Some((state, semantic_state)))
 }
 
-type R2 = HashMap<Arc<Path>, (Arc<UncasedStr>, (State, Vec<SemanticTokenLocation>))>;
+type R2 = HashMap<Arc<Path>, (Option<Arc<UncasedStr>>, (State, Vec<SemanticTokenLocation>))>;
 
 type R1 = (R2, HashMap<Arc<Path>, (String, Vec<Error>)>);
 
-pub fn process(addon_path: PathBuf, functions: &Functions) -> R1 {
-    let results = functions
-        .par_iter()
-        .filter_map(|(name, path)| {
-            let span = path.span;
+enum Either {
+    Original(Spanned<String>),
+    Path(Arc<Path>),
+}
 
-            let path = sqf::get_path(&path.inner, &addon_path, &Default::default()).ok()?;
+pub fn process(addon_path: PathBuf, functions: &Functions) -> R1 {
+    let f = functions.par_iter().map(|(function_name, sqf_path)| {
+        let path = get_path(&sqf_path.inner, &addon_path, &Default::default()).ok();
+        (
+            Some(Spanned::new(function_name.clone(), sqf_path.span)),
+            path.map(Either::Path)
+                .unwrap_or(Either::Original(sqf_path.clone())),
+        )
+    });
+    // iterator over default files analyze
+    let defaults = MISSION_INIT_SCRIPTS.into_par_iter().map(|file| {
+        let mut directory = addon_path.to_owned();
+        directory.pop();
+        let path: Arc<Path> = directory.join(file).into();
+        (None::<Spanned<Arc<UncasedStr>>>, Either::Path(path))
+    });
+
+    // iterator over all relevant files to analyze
+    let files = f.chain(defaults);
+
+    let results = files
+        .filter_map(|(function_name, path)| {
+            let (path, content) = match path {
+                Either::Original(original) => {
+                    let processed = (None, vec![Error::new(
+                        format!("The function \"{}\" is declared but could not derive a path for \"{}\"", function_name.as_ref().unwrap().inner, original.inner),
+                        original.span,
+                    )], None);
+                    return Some((addon_path.clone().into(), function_name.map(|x| x.inner), processed));
+                }
+                Either::Path(path) => {
+                    let Ok(content) = std::fs::read_to_string(path.as_ref()) else {
+                        if let Some(ma) = &function_name {
+                            let processed = (None, vec![Error::new(
+                                format!("The function \"{}\" is declared but could not open file \"{}\"", ma.inner, path.display()),
+                                ma.span,
+                            )], None);
+
+                            return Some((path, function_name.map(|x| x.inner), processed));
+                        } else {
+                            // default files are optional, skip if not found
+                            return None
+                        };
+                    };
+                    (path, content)
+                },
+            };
+
             let configuration = Configuration {
                 file_path: path.clone(),
                 base_path: addon_path.to_owned(),
@@ -110,8 +144,8 @@ pub fn process(addon_path: PathBuf, functions: &Functions) -> R1 {
 
             Some((
                 path,
-                name.clone(),
-                process_file(name.clone(), configuration, span, functions),
+                function_name.map(|x| x.inner),
+                process_file(content, configuration, functions),
             ))
         })
         .collect::<Vec<_>>();

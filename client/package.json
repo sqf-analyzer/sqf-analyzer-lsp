@@ -3,7 +3,7 @@
 	"displayName": "sqf-analyzer",
 	"description": "SQF language support for Visual Studio Code",
 	"license": "MIT",
-	"version": "0.1.10",
+	"version": "0.1.11",
 	"icon": "icon.png",
 	"keywords": [
 		"sqf"

@@ -165,45 +165,13 @@ impl LanguageServer for Backend {
         self.client
             .log_message(MessageType::INFO, "semantic_tokens_full")
             .await;
-        let uri = params.text_document.uri.as_str();
-        let semantic_tokens = || -> Option<Vec<SemanticToken>> {
-            let im_complete_tokens = &self.states.get(uri)?.0 .1;
-            let rope = self.documents.get(uri)?;
-            let mut pre_line = 0;
-            let mut pre_start = 0;
-            let semantic_tokens = im_complete_tokens
-                .iter()
-                .filter_map(|token| {
-                    let line = rope.try_byte_to_line(token.start).ok()? as u32;
-                    let first = rope.try_line_to_char(line as usize).ok()? as u32;
-                    let start = rope.try_byte_to_char(token.start).ok()? as u32 - first;
-                    let delta_line = line - pre_line;
-                    let delta_start = if delta_line == 0 {
-                        start - pre_start
-                    } else {
-                        start
-                    };
-                    let ret = Some(SemanticToken {
-                        delta_line,
-                        delta_start,
-                        length: token.length as u32,
-                        token_type: token.token_type as u32,
-                        token_modifiers_bitset: 0,
-                    });
-                    pre_line = line;
-                    pre_start = start;
-                    ret
-                })
-                .collect::<Vec<_>>();
-            Some(semantic_tokens)
-        }();
-        if let Some(semantic_token) = semantic_tokens {
-            return Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
+
+        Ok(self.semantic(params).map(|semantic_token| {
+            SemanticTokensResult::Tokens(SemanticTokens {
                 result_id: None,
                 data: semantic_token,
-            })));
-        }
-        Ok(None)
+            })
+        }))
     }
 
     async fn inlay_hint(
@@ -376,7 +344,7 @@ impl Backend {
         for (path, (function_name, state_semantic)) in states {
             if let Ok(url) = Url::from_file_path(path) {
                 self.states
-                    .insert(url.to_string(), (state_semantic, Some(function_name)));
+                    .insert(url.to_string(), (state_semantic, function_name));
             }
         }
 
@@ -412,6 +380,8 @@ impl Backend {
                     })
                     .collect::<Vec<_>>()
             })
+            // group errors by files.
+            // files may have errors from other files and thus need to be grouped by file
             .fold(
                 std::collections::BTreeMap::<_, Vec<_>>::new(),
                 |mut acc, (a, b)| {
@@ -592,6 +562,39 @@ impl Backend {
         });
 
         Some(items.chain(params).collect())
+    }
+
+    fn semantic(&self, params: SemanticTokensParams) -> Option<Vec<SemanticToken>> {
+        let uri = params.text_document.uri.as_str();
+        let im_complete_tokens = &self.states.get(uri)?.0 .1;
+        let rope = self.documents.get(uri)?;
+        let mut previous_line = 0;
+        let mut previous_start = 0;
+        let semantic_tokens = im_complete_tokens
+            .iter()
+            .filter_map(|token| {
+                let line = rope.try_byte_to_line(token.start).ok()? as u32;
+                let first = rope.try_line_to_char(line as usize).ok()? as u32;
+                let start = rope.try_byte_to_char(token.start).ok()? as u32 - first;
+                let delta_line = line - previous_line;
+                let delta_start = if delta_line == 0 {
+                    start - previous_start
+                } else {
+                    start
+                };
+                let ret = Some(SemanticToken {
+                    delta_line,
+                    delta_start,
+                    length: token.length as u32,
+                    token_type: token.token_type as u32,
+                    token_modifiers_bitset: 0,
+                });
+                previous_line = line;
+                previous_start = start;
+                ret
+            })
+            .collect::<Vec<_>>();
+        Some(semantic_tokens)
     }
 }
 

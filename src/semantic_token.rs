@@ -125,5 +125,7 @@ pub fn semantic_tokens(
     for ast in tokens {
         recurse(ast, &mut container, mission);
     }
+    container.sort_by_key(|x| x.start);
+
     container
 }
