@@ -1,4 +1,5 @@
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
@@ -30,6 +31,7 @@ struct Backend {
     undefined_variables_are_error: AtomicBool,
     private_variables_in_mission_are_error: AtomicBool,
     is_loaded: AtomicBool,
+    addon_paths: RwLock<HashMap<Arc<str>, PathBuf>>,
     addon_path: RwLock<Option<Arc<Path>>>,
 }
 
@@ -177,30 +179,47 @@ impl LanguageServer for Backend {
         self.client
             .log_message(MessageType::INFO, format!("{:?}", params.settings))
             .await;
-        let variables = params
+
+        let server_settings = params
             .settings
             .as_object()
             .and_then(|x| x.get("sqf-analyzer"))
             .and_then(|x| x.as_object())
             .and_then(|x| x.get("server"))
-            .and_then(|x| x.as_object())
+            .and_then(|x| x.as_object());
+
+        let variables = server_settings
             .and_then(|x| x.get("variables"))
             .and_then(|x| x.as_bool())
             .unwrap_or(false);
         self.undefined_variables_are_error
             .store(variables, Ordering::Relaxed);
-        let variables = params
-            .settings
-            .as_object()
-            .and_then(|x| x.get("sqf-analyzer"))
-            .and_then(|x| x.as_object())
-            .and_then(|x| x.get("server"))
-            .and_then(|x| x.as_object())
+
+        let variables = server_settings
             .and_then(|x| x.get("private_variables_in_mission_are_error"))
             .and_then(|x| x.as_bool())
             .unwrap_or(false);
         self.private_variables_in_mission_are_error
             .store(variables, Ordering::Relaxed);
+
+        let addon_paths = server_settings
+            .and_then(|x| x.get("addons"))
+            .and_then(|x| x.as_object())
+            .map(|x| {
+                x.iter()
+                    .filter_map(|(key, value)| {
+                        value
+                            .as_str()
+                            .map(PathBuf::from)
+                            .map(|value| (key.clone().into(), value))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        {
+            let mut w = self.addon_paths.write().unwrap();
+            *w = addon_paths;
+        }
     }
 
     async fn did_change_workspace_folders(&self, _: DidChangeWorkspaceFoldersParams) {
@@ -317,7 +336,8 @@ impl Backend {
                 return;
             };
 
-        let (states, originals) = addon::process(addon_path.clone(), &functions);
+        let addon_paths = self.addon_paths.read().unwrap().clone();
+        let (states, originals) = addon::process(addon_path.clone(), addon_paths, &functions);
 
         {
             let mut w = self.addon_path.write().unwrap();
@@ -404,10 +424,11 @@ impl Backend {
             .map(|x| x.as_ref().to_owned())
             .unwrap_or_default();
         let path = uri.to_file_path().expect("utf-8 path");
+
         let configuration = sqf::analyzer::Configuration {
             file_path: path.into(),
             base_path: addon_path,
-            ..Default::default()
+            addons: self.addon_paths.read().unwrap().clone(),
         };
 
         let (state_semantic, errors) = match compute(&params.text, configuration, mission) {
@@ -609,6 +630,7 @@ async fn main() {
         client,
         undefined_variables_are_error: false.into(),
         private_variables_in_mission_are_error: false.into(),
+        addon_paths: Default::default(),
         is_loaded: false.into(),
         states: Default::default(),
         documents: Default::default(),

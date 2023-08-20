@@ -75,7 +75,11 @@ enum Either {
     Path(Arc<Path>),
 }
 
-pub fn process(addon_path: PathBuf, functions: &Functions) -> R1 {
+pub fn process(
+    addon_path: PathBuf,
+    addons: HashMap<Arc<str>, PathBuf>,
+    functions: &Functions,
+) -> R1 {
     let f = functions.par_iter().map(|(function_name, sqf_path)| {
         let path = get_path(&sqf_path.inner, &addon_path, &Default::default()).ok();
         (
@@ -126,7 +130,7 @@ pub fn process(addon_path: PathBuf, functions: &Functions) -> R1 {
             let configuration = Configuration {
                 file_path: path.clone(),
                 base_path: addon_path.to_owned(),
-                ..Default::default()
+                addons: addons.clone(),
             };
 
             Some((

@@ -11,6 +11,7 @@ Install the extension and open an `.sqf` file.
 - go to definition
 - inlay hints for types and parameter names
 - semantic syntax highlighting
+- External Addons
 
 ### Full support for evaluating preprocessor
 

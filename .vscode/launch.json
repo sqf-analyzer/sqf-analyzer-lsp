@@ -16,7 +16,7 @@
       ],
       "preLaunchTask": "Build Extension",
       "env": {
-        "SERVER_PATH": "${workspaceRoot}/target/release/sqf-analyzer-server"
+        "SERVER_PATH": "${workspaceRoot}/target/debug/sqf-analyzer-server"
       }
     },
   ]

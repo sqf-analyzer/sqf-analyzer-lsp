@@ -26,7 +26,7 @@ mod tests {
             };
 
         println!("processing");
-        let (states, _) = addon::process(addon_path.clone(), &functions);
+        let (states, _) = addon::process(addon_path.clone(), Default::default(), &functions);
 
         println!("single file");
         let uri = Url::parse(
