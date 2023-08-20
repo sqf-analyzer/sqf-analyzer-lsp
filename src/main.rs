@@ -144,7 +144,6 @@ impl LanguageServer for Backend {
     }
 
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
-        self.client.log_message(MessageType::INFO, "hover").await;
         Ok(self.hover(params))
     }
 
@@ -152,9 +151,6 @@ impl LanguageServer for Backend {
         &self,
         params: GotoDefinitionParams,
     ) -> Result<Option<GotoDefinitionResponse>> {
-        self.client
-            .log_message(MessageType::INFO, "goto_definition")
-            .await;
         Ok(self.get_definition(params))
     }
 
@@ -162,10 +158,6 @@ impl LanguageServer for Backend {
         &self,
         params: SemanticTokensParams,
     ) -> Result<Option<SemanticTokensResult>> {
-        self.client
-            .log_message(MessageType::INFO, "semantic_tokens_full")
-            .await;
-
         Ok(self.semantic(params).map(|semantic_token| {
             SemanticTokensResult::Tokens(SemanticTokens {
                 result_id: None,
@@ -178,9 +170,6 @@ impl LanguageServer for Backend {
         &self,
         params: tower_lsp::lsp_types::InlayHintParams,
     ) -> Result<Option<Vec<InlayHint>>> {
-        self.client
-            .log_message(MessageType::INFO, "inlay hint")
-            .await;
         Ok(self.inlay(params))
     }
 
@@ -304,7 +293,8 @@ impl Backend {
             .log_message(MessageType::INFO, "loading mission or addon")
             .await;
 
-        let (addon_path, (states, originals)) =
+        // collect functions and other scripts
+        let (addon_path, functions) =
             if let Some((path, functions)) = addon::identify(uri, "config.cpp") {
                 self.client
                     .log_message(
@@ -316,7 +306,7 @@ impl Backend {
                         ),
                     )
                     .await;
-                (path.clone().into(), addon::process(path, &functions))
+                (path, functions)
             } else if let Some((path, functions)) = addon::identify(uri, "description.ext") {
                 self.client
                     .log_message(
@@ -328,7 +318,7 @@ impl Backend {
                         ),
                     )
                     .await;
-                (path.clone().into(), addon::process(path, &functions))
+                (path, functions)
             } else {
                 self.client
                     .log_message(MessageType::INFO, "neither mission nor addon found")
@@ -336,9 +326,11 @@ impl Backend {
                 return;
             };
 
+        let (states, originals) = addon::process(addon_path.clone(), &functions);
+
         {
             let mut w = self.addon_path.write().unwrap();
-            *w = Some(addon_path);
+            *w = Some(addon_path.into());
         }
 
         for (path, (function_name, state_semantic)) in states {
@@ -402,9 +394,9 @@ impl Backend {
         self.load_project(&params.uri, params.version).await;
 
         let uri = &params.uri;
-        let rope = ropey::Rope::from_str(&params.text);
         let key = uri.to_string();
-        self.documents.insert(key.clone(), rope.clone());
+        self.documents
+            .insert(key.clone(), ropey::Rope::from_str(&params.text));
 
         let mission = self
             .states
@@ -449,6 +441,7 @@ impl Backend {
                     .clone()
                     .and_then(|x| Url::from_file_path(x).ok())
                     .unwrap_or_else(|| url.clone());
+                let rope = self.documents.get(origin.as_str())?;
                 to_diagnostic(error, &rope).map(|x| (origin, x))
             })
             .fold(
