@@ -47,7 +47,7 @@ fn process_file(content: String, configuration: Configuration, functions: &Funct
             Some((
                 k.clone(),
                 (
-                    Origin::External(path, None),
+                    Origin(path, None),
                     Some(Output::Type(Type::Code)),
                 ),
             ))

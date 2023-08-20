@@ -8,7 +8,7 @@ use ropey::Rope;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use sqf::analyzer::{Origin, State};
+use sqf::analyzer::State;
 use sqf::error::{Error, ErrorType};
 use sqf::UncasedStr;
 use sqf_analyzer_server::{addon, hover};
@@ -262,23 +262,14 @@ impl Backend {
 
             let def = definition::get_definition(&state.0 .0, offset);
 
-            def.and_then(|origin| match origin {
-                Origin::File(span) => {
-                    let range = span_to_range(span, &rope)?;
-                    Some(GotoDefinitionResponse::Scalar(Location::new(
-                        uri.clone(),
-                        range,
-                    )))
-                }
-                Origin::External(path, span) => {
-                    let url = Url::from_file_path(path.as_ref()).ok()?;
-                    let range = self
-                        .documents
-                        .get(url.as_str())
-                        .and_then(|rope| span_to_range(span?, &rope))
-                        .unwrap_or_default();
-                    Some(GotoDefinitionResponse::Scalar(Location::new(url, range)))
-                }
+            def.and_then(|origin| {
+                let url = Url::from_file_path(origin.0.as_ref()).ok()?;
+                let range = self
+                    .documents
+                    .get(url.as_str())
+                    .and_then(|rope| span_to_range(origin.1.unwrap_or((0, 0)), &rope))
+                    .unwrap_or_default();
+                Some(GotoDefinitionResponse::Scalar(Location::new(url, range)))
             })
         })
     }
@@ -405,28 +396,29 @@ impl Backend {
             .flat_map(|x| x.0 .0.globals(x.1.clone()))
             .collect();
 
+        let addon_path = self
+            .addon_path
+            .read()
+            .unwrap()
+            .as_ref()
+            .map(|x| x.as_ref().to_owned())
+            .unwrap_or_default();
         let path = uri.to_file_path().expect("utf-8 path");
         let configuration = sqf::analyzer::Configuration {
             file_path: path.into(),
-            base_path: self
-                .addon_path
-                .read()
-                .unwrap()
-                .as_ref()
-                .map(|x| x.as_ref().to_owned())
-                .unwrap_or_default(),
+            base_path: addon_path,
             ..Default::default()
+        };
+
+        let (state_semantic, errors) = match compute(&params.text, configuration, mission) {
+            Ok((state, semantic, errors)) => (Some((state, semantic)), errors),
+            Err(e) => (None, vec![e]),
         };
 
         let error_on_undefined = self.undefined_variables_are_error.load(Ordering::Relaxed);
         let private_variables_in_mission_are_error = self
             .private_variables_in_mission_are_error
             .load(Ordering::Relaxed);
-        let (state_semantic, errors) = match compute(&params.text, configuration, mission) {
-            Ok((state, semantic, errors)) => (Some((state, semantic)), errors),
-            Err(e) => (None, vec![e]),
-        };
-
         let url = params.uri.clone();
         let diagnostics = errors
             .into_iter()
