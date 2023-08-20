@@ -40,22 +40,6 @@
 			"type": "object",
 			"title": "sqf-analyzer",
 			"properties": {
-				"sqf-analyzer.trace.server": {
-					"type": "string",
-					"scope": "window",
-					"enum": [
-						"off",
-						"messages",
-						"verbose"
-					],
-					"enumDescriptions": [
-						"No traces",
-						"Error only",
-						"Full log"
-					],
-					"default": "verbose",
-					"description": "Traces the communication between VS Code and the language server."
-				},
 				"sqf-analyzer.server.variables": {
 					"description": "Makes undefined variables be treated as errors",
 					"type": "boolean",

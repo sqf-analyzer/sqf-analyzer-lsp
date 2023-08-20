@@ -51,8 +51,6 @@ function getServer(conf: WorkspaceConfiguration): string {
 
 
 export async function activate(context: ExtensionContext) {
-  const traceOutputChannel = window.createOutputChannel("SQF Language Server trace");
-
   const config = workspace.getConfiguration("sqf-analyzer");
   const command = process.env.SERVER_PATH || getServer(config);
   const run: Executable = {
@@ -76,8 +74,7 @@ export async function activate(context: ExtensionContext) {
       // Notify the server about file changes to '.clientrc files contained in the workspace
       fileEvents: workspace.createFileSystemWatcher("**/.clientrc"),
       configurationSection: "sqf-analyzer"
-    },
-    traceOutputChannel,
+    }
   };
 
   // Create the language client and start the client.
