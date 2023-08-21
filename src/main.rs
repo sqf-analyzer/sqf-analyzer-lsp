@@ -367,7 +367,8 @@ impl Backend {
                 errors
                     .into_iter()
                     .filter(|error| {
-                        error_on_undefined || (error.type_ != ErrorType::UndefinedVariable)
+                        error_on_undefined
+                            || (!matches!(error.type_, ErrorType::UndefinedVariable(_)))
                     })
                     .filter(|error| {
                         private_variables_in_mission_are_error
@@ -443,7 +444,9 @@ impl Backend {
         let url = params.uri.clone();
         let diagnostics = errors
             .into_iter()
-            .filter(|error| error_on_undefined || (error.type_ != ErrorType::UndefinedVariable))
+            .filter(|error| {
+                error_on_undefined || (!matches!(error.type_, ErrorType::UndefinedVariable(_)))
+            })
             .filter(|error| {
                 private_variables_in_mission_are_error
                     || (error.type_ != ErrorType::PrivateAssignedToMission)
