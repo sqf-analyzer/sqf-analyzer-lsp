@@ -30,6 +30,7 @@ struct Backend {
     documents: DashMap<String, Rope>,
     undefined_variables_are_error: AtomicBool,
     private_variables_in_mission_are_error: AtomicBool,
+    error_on_unused: AtomicBool,
     is_loaded: AtomicBool,
     addon_paths: RwLock<HashMap<Arc<str>, PathBuf>>,
     addon_path: RwLock<Option<Arc<Path>>>,
@@ -202,6 +203,14 @@ impl LanguageServer for Backend {
         self.private_variables_in_mission_are_error
             .store(variables, Ordering::Relaxed);
 
+        self.error_on_unused.store(
+            server_settings
+                .and_then(|x| x.get("error_on_unused"))
+                .and_then(|x| x.as_bool())
+                .unwrap_or(false),
+            Ordering::Relaxed,
+        );
+
         let addon_paths = server_settings
             .and_then(|x| x.get("addons"))
             .and_then(|x| x.as_object())
@@ -355,6 +364,7 @@ impl Backend {
         let private_variables_in_mission_are_error = self
             .private_variables_in_mission_are_error
             .load(Ordering::Relaxed);
+        let error_on_unused = self.error_on_unused.load(Ordering::Relaxed);
 
         let diagnostics = originals
             .into_iter()
@@ -374,6 +384,7 @@ impl Backend {
                         private_variables_in_mission_are_error
                             || (error.type_ != ErrorType::PrivateAssignedToMission)
                     })
+                    .filter(|error| error_on_unused || (error.type_ != ErrorType::UnusedVariable))
                     .filter_map(|error| {
                         let origin = error
                             .origin
@@ -438,6 +449,7 @@ impl Backend {
         };
 
         let error_on_undefined = self.undefined_variables_are_error.load(Ordering::Relaxed);
+        let error_on_unused = self.error_on_unused.load(Ordering::Relaxed);
         let private_variables_in_mission_are_error = self
             .private_variables_in_mission_are_error
             .load(Ordering::Relaxed);
@@ -451,6 +463,7 @@ impl Backend {
                 private_variables_in_mission_are_error
                     || (error.type_ != ErrorType::PrivateAssignedToMission)
             })
+            .filter(|error| error_on_unused || (error.type_ != ErrorType::UnusedVariable))
             .filter_map(|error| {
                 let origin = error
                     .origin
@@ -608,12 +621,18 @@ impl Backend {
 }
 
 fn to_diagnostic(item: Error, rope: &Rope) -> Option<Diagnostic> {
+    let severity = match item.type_ {
+        ErrorType::PrivateAssignedToMission => DiagnosticSeverity::INFORMATION,
+        ErrorType::UndefinedVariable(_) => DiagnosticSeverity::WARNING,
+        ErrorType::UnusedVariable => DiagnosticSeverity::INFORMATION,
+        _ => DiagnosticSeverity::ERROR,
+    };
     let (message, span) = (item.type_.to_string(), item.span);
     let start_position = offset_to_position(span.0, rope)?;
     let end_position = offset_to_position(span.1, rope)?;
     Some(Diagnostic::new(
         Range::new(start_position, end_position),
-        None,
+        Some(severity),
         None,
         Some("sqf-analyzer".into()),
         message,
@@ -633,6 +652,7 @@ async fn main() {
         client,
         undefined_variables_are_error: false.into(),
         private_variables_in_mission_are_error: false.into(),
+        error_on_unused: false.into(),
         addon_paths: Default::default(),
         is_loaded: false.into(),
         states: Default::default(),
