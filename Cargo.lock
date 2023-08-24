@@ -779,7 +779,7 @@ checksum = "62bb4feee49fdd9f707ef802e22365a35de4b7b299de4763d44bfea899442ff9"
 [[package]]
 name = "sqf"
 version = "0.1.0"
-source = "git+https://github.com/sqf-analyzer/sqf-analyzer#5845422db4e24e3e8f4d66591b1db5ae8611a8a4"
+source = "git+https://github.com/sqf-analyzer/sqf-analyzer#7875d04486335d40916446e8584d30e436ca5b95"
 dependencies = [
  "lazy_static",
  "path-clean",
