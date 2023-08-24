@@ -17,8 +17,19 @@ use crate::semantic_token::SemanticTokenLocation;
 
 type Functions = HashMap<Arc<UncasedStr>, Spanned<String>>;
 
-pub fn identify(url: &Url, name: &str) -> Option<(PathBuf, Functions)> {
-    let mut addon_path = url.to_file_path().ok()?;
+/// tries to find the addon's config or mission description.ext of a given file
+pub fn identify(url: &Url) -> Option<(PathBuf, Functions)> {
+    let addon_path = url.to_file_path().ok()?;
+    if let Some((path, functions)) = identify_(addon_path.clone(), "config.cpp") {
+        Some((path, functions))
+    } else if let Some((path, functions)) = identify_(addon_path, "description.ext") {
+        Some((path, functions))
+    } else {
+        None
+    }
+}
+
+fn identify_(mut addon_path: PathBuf, name: &str) -> Option<(PathBuf, Functions)> {
     while addon_path.components().count() > 3 && addon_path.pop() {
         let configuration = preprocessor::Configuration::with_path(addon_path.join(name));
         let Ok((functions, _)) = analyze_file(configuration) else {
@@ -27,6 +38,47 @@ pub fn identify(url: &Url, name: &str) -> Option<(PathBuf, Functions)> {
         return Some((addon_path.join(name), functions));
     }
     None
+}
+
+/// searches for all addons and mission description.ext within a project
+pub fn find(url: &Url) -> Vec<(PathBuf, Functions)> {
+    let Ok(addon_path) = url.to_file_path() else {return vec![]};
+
+    let mut r = find_(addon_path.clone(), "config.cpp");
+    r.extend(find_(addon_path, "description.ext"));
+    r
+}
+
+pub fn find_(addon_path: PathBuf, name: &str) -> Vec<(PathBuf, Functions)> {
+    let Some(first) = identify_(addon_path, name) else {
+        return vec![]
+    };
+    let mut down1 = first.0.clone(); // addons/A/config.cpp
+    down1.pop(); // addons/A/
+    down1.pop(); // addons/
+
+    list_directories(&down1)
+        .into_iter()
+        .filter_map(|mut directory| {
+            directory.push(name);
+            identify_(directory, name)
+        })
+        .collect()
+}
+
+fn list_directories(path: impl AsRef<Path>) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(path) else { return vec![] };
+    entries
+        .flatten()
+        .flat_map(|entry| {
+            let meta = entry.metadata().ok()?;
+            if meta.is_dir() {
+                Some(entry.path())
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 type R = (

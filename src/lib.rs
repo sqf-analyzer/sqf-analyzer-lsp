@@ -12,18 +12,12 @@ mod tests {
 
     #[test]
     fn bla() {
-        let uri = Url::parse(
+        let url = Url::parse(
             "file:///home/azureuser/projects/arma/antistasi/Antistasi/fnc_AAFattackScore.sqf",
         )
         .unwrap();
-        let (addon_path, functions) =
-            if let Some((path, functions)) = addon::identify(&uri, "config.cpp") {
-                (path, functions)
-            } else if let Some((path, functions)) = addon::identify(&uri, "description.ext") {
-                (path, functions)
-            } else {
-                panic!();
-            };
+
+        let (addon_path, functions) = addon::identify(&url).unwrap();
 
         println!("processing");
         let (states, _) = addon::process(addon_path.clone(), Default::default(), &functions);

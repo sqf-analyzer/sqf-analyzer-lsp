@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
@@ -33,7 +33,6 @@ struct Backend {
     error_on_unused: AtomicBool,
     is_loaded: AtomicBool,
     addon_paths: RwLock<HashMap<Arc<str>, PathBuf>>,
-    addon_path: RwLock<Option<Arc<Path>>>,
 }
 
 #[tower_lsp::async_trait]
@@ -307,58 +306,32 @@ impl Backend {
         if self.is_loaded.load(Ordering::Relaxed) {
             return;
         };
-        self.is_loaded.store(true, Ordering::Relaxed);
         self.client
             .log_message(MessageType::INFO, "loading mission or addon")
             .await;
 
-        // collect functions and other scripts
-        let (addon_path, functions) =
-            if let Some((path, functions)) = addon::identify(uri, "config.cpp") {
-                self.client
-                    .log_message(
-                        MessageType::INFO,
-                        format!(
-                            "Found addon at \"{}\" with {} functions.",
-                            path.display(),
-                            functions.len()
-                        ),
-                    )
-                    .await;
-                (path, functions)
-            } else if let Some((path, functions)) = addon::identify(uri, "description.ext") {
-                self.client
-                    .log_message(
-                        MessageType::INFO,
-                        format!(
-                            "Found mission at \"{}\" with {} functions.",
-                            path.display(),
-                            functions.len()
-                        ),
-                    )
-                    .await;
-                (path, functions)
-            } else {
-                self.client
-                    .log_message(MessageType::INFO, "neither mission nor addon found")
-                    .await;
-                return;
-            };
+        let all_addons = addon::find(uri);
+        for (addon_path, functions) in all_addons.iter() {
+            self.client
+                .log_message(
+                    MessageType::INFO,
+                    format!(
+                        "Found addon at \"{}\" with {} functions.",
+                        addon_path.display(),
+                        functions.len()
+                    ),
+                )
+                .await;
+        }
+        if all_addons.is_empty() {
+            self.client
+                .log_message(MessageType::INFO, "neither mission nor addon found")
+                .await;
+            self.is_loaded.store(true, Ordering::Relaxed);
+            return;
+        }
 
         let addon_paths = self.addon_paths.read().unwrap().clone();
-        let (states, originals) = addon::process(addon_path.clone(), addon_paths, &functions);
-
-        {
-            let mut w = self.addon_path.write().unwrap();
-            *w = Some(addon_path.into());
-        }
-
-        for (path, (function_name, state_semantic)) in states {
-            if let Ok(url) = Url::from_file_path(path) {
-                self.states
-                    .insert(url.to_string(), (state_semantic, function_name));
-            }
-        }
 
         let error_on_undefined = self.undefined_variables_are_error.load(Ordering::Relaxed);
         let private_variables_in_mission_are_error = self
@@ -366,51 +339,67 @@ impl Backend {
             .load(Ordering::Relaxed);
         let error_on_unused = self.error_on_unused.load(Ordering::Relaxed);
 
-        let diagnostics = originals
-            .into_iter()
-            // convert path to url. This is likely never filtered since originals only contain files that we could open
-            .filter_map(|x| Url::from_file_path(x.0).ok().map(|url| (url, x.1)))
-            // filter the current file because it may have not been saved and thus cannot be analyzed
-            .filter(|(url, _)| url != uri)
-            .flat_map(|(url, (content, errors))| {
-                let rope = Rope::from_str(&content);
-                errors
-                    .into_iter()
-                    .filter(|error| {
-                        error_on_undefined
-                            || (!matches!(error.type_, ErrorType::UndefinedVariable(_)))
-                    })
-                    .filter(|error| {
-                        private_variables_in_mission_are_error
-                            || (error.type_ != ErrorType::PrivateAssignedToMission)
-                    })
-                    .filter(|error| error_on_unused || (error.type_ != ErrorType::UnusedVariable))
-                    .filter_map(|error| {
-                        let origin = error
-                            .origin
-                            .clone()
-                            .and_then(|x| Url::from_file_path(x).ok())
-                            .unwrap_or_else(|| url.clone());
-                        to_diagnostic(error, &rope).map(|x| (origin, x))
-                    })
-                    .collect::<Vec<_>>()
-            })
-            // group errors by files.
-            // files may have errors from other files and thus need to be grouped by file
-            .fold(
-                std::collections::BTreeMap::<_, Vec<_>>::new(),
-                |mut acc, (a, b)| {
-                    acc.entry(a).or_default().push(b);
-                    acc
-                },
-            );
+        for (addon_path, functions) in all_addons {
+            let (states, originals) =
+                addon::process(addon_path.clone(), addon_paths.clone(), &functions);
 
-        // todo: use futures join to push them concurrently
-        for (url, diagnostics) in diagnostics {
-            self.client
-                .publish_diagnostics(url, diagnostics, Some(version))
-                .await;
+            // store the state of each of the functions
+            for (path, (function_name, state_semantic)) in states {
+                if let Ok(url) = Url::from_file_path(path) {
+                    self.states
+                        .insert(url.to_string(), (state_semantic, function_name));
+                }
+            }
+
+            let diagnostics = originals
+                .into_iter()
+                // convert path to url. This is likely never filtered since originals only contain files that we could open
+                .filter_map(|x| Url::from_file_path(x.0).ok().map(|url| (url, x.1)))
+                // filter the current file because it may have not been saved and thus cannot be analyzed
+                .filter(|(url, _)| url != uri)
+                .flat_map(|(url, (content, errors))| {
+                    let rope = Rope::from_str(&content);
+                    errors
+                        .into_iter()
+                        .filter(|error| {
+                            error_on_undefined
+                                || (!matches!(error.type_, ErrorType::UndefinedVariable(_)))
+                        })
+                        .filter(|error| {
+                            private_variables_in_mission_are_error
+                                || (error.type_ != ErrorType::PrivateAssignedToMission)
+                        })
+                        .filter(|error| {
+                            error_on_unused || (error.type_ != ErrorType::UnusedVariable)
+                        })
+                        .filter_map(|error| {
+                            let origin = error
+                                .origin
+                                .clone()
+                                .and_then(|x| Url::from_file_path(x).ok())
+                                .unwrap_or_else(|| url.clone());
+                            to_diagnostic(error, &rope).map(|x| (origin, x))
+                        })
+                        .collect::<Vec<_>>()
+                })
+                // group errors by files.
+                // files may have errors from other files and thus need to be grouped by file
+                .fold(
+                    std::collections::BTreeMap::<_, Vec<_>>::new(),
+                    |mut acc, (a, b)| {
+                        acc.entry(a).or_default().push(b);
+                        acc
+                    },
+                );
+
+            // todo: use futures join to push them concurrently
+            for (url, diagnostics) in diagnostics {
+                self.client
+                    .publish_diagnostics(url, diagnostics, Some(version))
+                    .await;
+            }
         }
+        self.is_loaded.store(true, Ordering::Relaxed);
     }
 
     async fn on_change(&self, params: TextDocumentItem) {
@@ -428,13 +417,7 @@ impl Backend {
             .flat_map(|x| x.0 .0.globals(x.1.clone()))
             .collect();
 
-        let addon_path = self
-            .addon_path
-            .read()
-            .unwrap()
-            .as_ref()
-            .map(|x| x.as_ref().to_owned())
-            .unwrap_or_default();
+        let addon_path = addon::identify(&uri).unwrap_or_default().0;
         let path = uri.to_file_path().expect("utf-8 path");
 
         let configuration = sqf::analyzer::Configuration {
@@ -657,7 +640,6 @@ async fn main() {
         is_loaded: false.into(),
         states: Default::default(),
         documents: Default::default(),
-        addon_path: Default::default(),
     })
     .finish();
 
