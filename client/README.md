@@ -1,17 +1,20 @@
 # sqf-analyzer
 
-This extension provides support for the [SQF programming language](https://community.bistudio.com/wiki/SQF_Syntax).
+This extension provides full support for the [SQF programming language](https://community.bistudio.com/wiki/SQF_Syntax).
+
+It provides a full-feature functionality, including but not limited to:
+
+* Semantic syntax highlighting
+* Go to definition
+* Inlay hints for types and parameter names
+* Full support for macro expansion (e.g. `#define`)
+* Compreensive type checker, including function signatures via `params`
+* Full support for listing available functions via `CfgFunction` in mission
+* External Addons
 
 ## Quick start
 
 Install the extension and open an `.sqf` file.
-
-## Features
-
-- go to definition
-- inlay hints for types and parameter names
-- semantic syntax highlighting
-- External Addons
 
 ### Full support for evaluating preprocessor
 

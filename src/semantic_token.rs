@@ -3,7 +3,7 @@ use std::collections::{HashMap, VecDeque};
 use sqf::{
     analyzer::{MissionNamespace, BINARY, NULLARY, UNARY},
     preprocessor::Ast,
-    span::Span,
+    span::{Span, Spanned},
     UncasedStr,
 };
 use tower_lsp::lsp_types::SemanticTokenType;
@@ -40,6 +40,24 @@ fn to_st(span: Span, token_type: SemanticTokenType) -> SemanticTokenLocation {
         length: span.1 - span.0,
         token_type: MAP[&token_type],
     }
+}
+
+fn to_semantic_tokens<'a>(
+    spanned: &'a Spanned<&'a str>,
+    token_type: SemanticTokenType,
+) -> impl Iterator<Item = SemanticTokenLocation> + 'a {
+    let mut start = spanned.span.0;
+    spanned.inner.split("\n").map(move |token| {
+        // first record starts at the start of the span. All others start from the beginning, since they represent
+        // new lines
+        let r = SemanticTokenLocation {
+            start,
+            length: token.len(),
+            token_type: MAP[&token_type],
+        };
+        start += token.len() + 1; // +1 due to the \n
+        r
+    })
 }
 
 fn recurse(ast: &Ast, container: &mut Vec<SemanticTokenLocation>, mission: &MissionNamespace) {
@@ -87,9 +105,22 @@ fn recurse(ast: &Ast, container: &mut Vec<SemanticTokenLocation>, mission: &Miss
             container.push(to_st(keyword.span, SemanticTokenType::MACRO));
             container.push(to_st(token.span, SemanticTokenType::STRING));
         }
-        Ast::Comment(token) => container.push(to_st(token.span, SemanticTokenType::COMMENT)),
-        Ast::Term(token) => container.push(to_st(token.span, infer_st(token.inner, mission))),
+        Ast::Comment(token) => {
+            container.extend(to_semantic_tokens(token, SemanticTokenType::COMMENT))
+        }
+        Ast::Term(token) => {
+            if is_string(token.inner) {
+                container.extend(to_semantic_tokens(token, SemanticTokenType::STRING))
+            } else {
+                container.push(to_st(token.span, infer_st(token.inner, mission)))
+            }
+        }
     }
+}
+
+fn is_string(token: &str) -> bool {
+    let bytes = token.as_bytes();
+    bytes.len() >= 2 && (bytes[0] == bytes[bytes.len() - 1]) && bytes[0] == b'\"'
 }
 
 fn infer_st(token: &str, mission: &MissionNamespace) -> SemanticTokenType {

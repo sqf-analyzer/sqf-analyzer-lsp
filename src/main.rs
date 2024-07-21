@@ -413,7 +413,7 @@ impl Backend {
         let mission = self
             .states
             .iter()
-            .filter(|x| x.key().as_ref() != key)
+            .filter(|x| x.key() != &key)
             .flat_map(|x| x.0 .0.globals(x.1.clone()))
             .collect();
 
