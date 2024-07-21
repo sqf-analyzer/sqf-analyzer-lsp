@@ -23,11 +23,7 @@ pnpm i
 
 ## How to publish
 
-1. Commit everything
-2. build latest `cargo build --release`
-3. Bump version in [`client/package.json`](./client/package.json)
-4. Run `cd client && pnpm package && pnpm publish`
-5. `git tag <version> && git push origin <version>`
+Push to main, create a new tag, and create new release in github.
 
 # Authors
 
