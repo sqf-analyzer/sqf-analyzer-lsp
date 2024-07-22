@@ -10,7 +10,7 @@ use sqf::span::Spanned;
 use sqf::types::Type;
 use sqf::{self, UncasedStr, MISSION_INIT_SCRIPTS};
 use sqf::{get_path, preprocessor};
-use tower_lsp::lsp_types::Url;
+use tower_lsp::lsp_types::{CompletionItem, Url};
 
 use crate::analyze::compute;
 use crate::semantic_token::SemanticTokenLocation;
@@ -33,7 +33,7 @@ fn identify_(mut addon_path: PathBuf, name: &str) -> Option<(PathBuf, Functions)
     while addon_path.components().count() > 3 && addon_path.pop() {
         let configuration = preprocessor::Configuration::with_path(addon_path.join(name));
         let Ok((functions, _)) = analyze_file(configuration) else {
-            continue
+            continue;
         };
         return Some((addon_path.join(name), functions));
     }
@@ -42,7 +42,9 @@ fn identify_(mut addon_path: PathBuf, name: &str) -> Option<(PathBuf, Functions)
 
 /// searches for all addons and mission description.ext within a project
 pub fn find(url: &Url) -> Vec<(PathBuf, Functions)> {
-    let Ok(addon_path) = url.to_file_path() else {return vec![]};
+    let Ok(addon_path) = url.to_file_path() else {
+        return vec![];
+    };
 
     let mut r = find_(addon_path.clone(), "config.cpp");
     r.extend(find_(addon_path, "description.ext"));
@@ -51,7 +53,7 @@ pub fn find(url: &Url) -> Vec<(PathBuf, Functions)> {
 
 pub fn find_(addon_path: PathBuf, name: &str) -> Vec<(PathBuf, Functions)> {
     let Some(first) = identify_(addon_path, name) else {
-        return vec![]
+        return vec![];
     };
     let mut down1 = first.0.clone(); // addons/A/config.cpp
     down1.pop(); // addons/A/
@@ -67,7 +69,9 @@ pub fn find_(addon_path: PathBuf, name: &str) -> Vec<(PathBuf, Functions)> {
 }
 
 fn list_directories(path: impl AsRef<Path>) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(path) else { return vec![] };
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return vec![];
+    };
     entries
         .flatten()
         .flat_map(|entry| {
@@ -84,7 +88,7 @@ fn list_directories(path: impl AsRef<Path>) -> Vec<PathBuf> {
 type R = (
     Option<String>,
     Vec<Error>,
-    Option<(State, Vec<SemanticTokenLocation>)>,
+    Option<(State, Vec<SemanticTokenLocation>, Vec<CompletionItem>)>,
 );
 
 fn process_file(content: String, configuration: Configuration, functions: &Functions) -> R {
@@ -93,32 +97,41 @@ fn process_file(content: String, configuration: Configuration, functions: &Funct
     let mission = functions
         .iter()
         .filter_map(|(k, path)| {
-            let Ok(path) = get_path(&path.inner, &configuration.base_path, &configuration.addons) else {
-                return None
+            let Ok(path) = get_path(&path.inner, &configuration.base_path, &configuration.addons)
+            else {
+                return None;
             };
             Some((
                 k.clone(),
-                (
-                    Origin(path, None),
-                    Some(Output::Type(Type::Code)),
-                ),
+                (Origin(path, None), Some(Output::Type(Type::Code))),
             ))
         })
         .collect();
-    let (state, semantic_state, new_errors) = match compute(&content, configuration, mission) {
-        Ok(a) => a,
-        Err(e) => {
-            errors.push(e);
-            return (Some(content), errors, None);
-        }
-    };
+    let (state, semantic_state, completion, new_errors) =
+        match compute(&content, configuration, mission) {
+            Ok(a) => a,
+            Err(e) => {
+                errors.push(e);
+                return (Some(content), errors, None);
+            }
+        };
 
     errors.extend(new_errors);
 
-    (Some(content), errors, Some((state, semantic_state)))
+    (
+        Some(content),
+        errors,
+        Some((state, semantic_state, completion)),
+    )
 }
 
-type R2 = HashMap<Arc<Path>, (Option<Arc<UncasedStr>>, (State, Vec<SemanticTokenLocation>))>;
+type R2 = HashMap<
+    Arc<Path>,
+    (
+        Option<Arc<UncasedStr>>,
+        (State, Vec<SemanticTokenLocation>, Vec<CompletionItem>),
+    ),
+>;
 
 type R1 = (R2, HashMap<Arc<Path>, (String, Vec<Error>)>);
 

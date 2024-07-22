@@ -2,10 +2,17 @@ use sqf::analyzer::{analyze, MissionNamespace, State};
 use sqf::error::Error;
 use sqf::parser::parse;
 use sqf::preprocessor::AstIterator;
+use tower_lsp::lsp_types::CompletionItem;
 
+use crate::completion;
 use crate::semantic_token::{semantic_tokens, SemanticTokenLocation};
 
-type Return = (State, Vec<SemanticTokenLocation>, Vec<Error>);
+type Return = (
+    State,
+    Vec<SemanticTokenLocation>,
+    Vec<CompletionItem>,
+    Vec<Error>,
+);
 
 pub fn compute(
     text: &str,
@@ -30,5 +37,6 @@ pub fn compute(
     state.namespace.mission = mission;
     analyze(&ast, &mut state);
     errors.extend(state.errors.clone());
-    Ok((state, semantic_tokens, errors))
+    let complete = completion::completion(&state.namespace);
+    Ok((state, semantic_tokens, complete, errors))
 }

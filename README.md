@@ -23,7 +23,7 @@ pnpm i
 
 ## How to publish
 
-Push to main, create a new tag, and create new release in github.
+Create a new semver tag from main and push it.
 
 # Authors
 

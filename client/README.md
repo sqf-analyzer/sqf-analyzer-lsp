@@ -10,6 +10,7 @@ It provides a full-feature functionality, including but not limited to:
 * Full support for macro expansion (e.g. `#define`)
 * Compreensive type checker, including function signatures via `params`
 * Full support for listing available functions via `CfgFunction` in mission
+* Full support for code completion, including description and signature of the completions
 * External Addons
 
 ## Quick start

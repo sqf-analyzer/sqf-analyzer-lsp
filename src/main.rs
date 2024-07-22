@@ -9,7 +9,7 @@ use ropey::Rope;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use sqf::analyzer::State;
+use sqf::analyzer::{State, BINARY, NULLARY, UNARY};
 use sqf::error::{Error, ErrorType};
 use sqf::UncasedStr;
 use sqf_analyzer_server::{addon, hover};
@@ -21,7 +21,13 @@ use tower_lsp::{Client, LanguageServer, LspService, Server};
 use sqf_analyzer_server::semantic_token::SemanticTokenLocation;
 use sqf_analyzer_server::{analyze::compute, definition, semantic_token::LEGEND_TYPE};
 
-type States = DashMap<String, ((State, Vec<SemanticTokenLocation>), Option<Arc<UncasedStr>>)>;
+type States = DashMap<
+    String,
+    (
+        (State, Vec<SemanticTokenLocation>, Vec<CompletionItem>),
+        Option<Arc<UncasedStr>>,
+    ),
+>;
 
 #[derive(Debug)]
 struct Backend {
@@ -46,7 +52,13 @@ impl LanguageServer for Backend {
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(
                     TextDocumentSyncKind::FULL,
                 )),
-                completion_provider: None,
+                completion_provider: Some(CompletionOptions {
+                    resolve_provider: Some(false),
+                    trigger_characters: Some(vec![".".to_string()]),
+                    work_done_progress_options: Default::default(),
+                    all_commit_characters: None,
+                    completion_item: None,
+                }),
                 execute_command_provider: Some(ExecuteCommandOptions {
                     commands: vec!["dummy.do_something".to_string()],
                     work_done_progress_options: Default::default(),
@@ -255,6 +267,10 @@ impl LanguageServer for Backend {
 
         Ok(None)
     }
+
+    async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
+        Ok(self.completion(params))
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -427,7 +443,9 @@ impl Backend {
         };
 
         let (state_semantic, errors) = match compute(&params.text, configuration, mission) {
-            Ok((state, semantic, errors)) => (Some((state, semantic)), errors),
+            Ok((state, semantic, completion, errors)) => {
+                (Some((state, semantic, completion)), errors)
+            }
             Err(e) => (None, vec![e]),
         };
 
@@ -600,6 +618,89 @@ impl Backend {
             })
             .collect::<Vec<_>>();
         Some(semantic_tokens)
+    }
+
+    fn completion(&self, params: CompletionParams) -> Option<CompletionResponse> {
+        let uri = params.text_document_position.text_document.uri.as_str();
+        let state = &self.states.get(uri)?.0 .0;
+        //let rope = self.documents.get(uri)?;
+
+        //let offset = position_to_offset(params.text_document_position.position, &rope)?;
+
+        let vars = state
+            .namespace
+            .stack
+            .iter()
+            .map(|stack| stack.variables.keys())
+            .flatten()
+            .map(|var| CompletionItem {
+                label: var.to_string(),
+                kind: Some(CompletionItemKind::VARIABLE),
+                ..Default::default()
+            })
+            .chain(NULLARY.iter().map(|(var, (type_, detail))| CompletionItem {
+                label: var.to_string(),
+                kind: Some(CompletionItemKind::CONSTANT),
+                detail: Some(detail.to_string()),
+                documentation: Some(Documentation::MarkupContent(MarkupContent {
+                    kind: MarkupKind::Markdown,
+                    value: format!("* `{type_:?}`: {}", detail.to_string()),
+                })),
+                ..Default::default()
+            }))
+            .chain(UNARY.iter().map(|(var, variants)| {
+                CompletionItem {
+                    label: var.to_string(),
+                    kind: Some(CompletionItemKind::FUNCTION),
+                    detail: variants
+                        .iter()
+                        .next()
+                        .and_then(|(_, value)| value.get(0).map(|x| x.1.to_string())),
+                    documentation: Some(Documentation::MarkupContent(MarkupContent {
+                        kind: MarkupKind::Markdown,
+                        value: variants
+                            .iter()
+                            .map(|(type_, value)| {
+                                value.iter().map(move |(t, explanation)| {
+                                    format!("* `{} {:?} -> {:?}`: {}", var, type_, t, explanation)
+                                })
+                            })
+                            .flatten()
+                            .collect::<Vec<String>>()
+                            .join("\n"),
+                    })),
+                    ..Default::default()
+                }
+            }))
+            .chain(BINARY.iter().map(|(var, variants)| {
+                CompletionItem {
+                    label: var.to_string(),
+                    kind: Some(CompletionItemKind::FUNCTION),
+                    detail: variants
+                        .iter()
+                        .next()
+                        .and_then(|(_, value)| value.get(0).map(|x| x.1.to_string())),
+                    documentation: Some(Documentation::MarkupContent(MarkupContent {
+                        kind: MarkupKind::Markdown,
+                        value: variants
+                            .iter()
+                            .map(|(type_, value)| {
+                                value.iter().map(|(t, explanation)| {
+                                    format!(
+                                        "* `{:?} {} {:?} -> {:?}`: {}",
+                                        type_.0, var, type_.1, t, explanation,
+                                    )
+                                })
+                            })
+                            .flatten()
+                            .collect::<Vec<String>>()
+                            .join("\n"),
+                    })),
+                    ..Default::default()
+                }
+            }));
+
+        Some(CompletionResponse::Array(vars.collect()))
     }
 }
 

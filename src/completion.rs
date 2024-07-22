@@ -1,106 +1,79 @@
-use std::collections::HashMap;
+use sqf::analyzer::{Namespace, BINARY, NULLARY, UNARY};
+use tower_lsp::lsp_types::{
+    CompletionItem, CompletionItemKind, Documentation, MarkupContent, MarkupKind,
+};
 
-use crate::chumsky::{Expr, Func, Spanned};
-pub enum ImCompleteCompletionItem {
-    Variable(String),
-    Function(String, Vec<String>),
-}
-/// return (need_to_continue_search, founded reference)
-pub fn completion(
-    ast: &HashMap<String, Func>,
-    ident_offset: usize,
-) -> HashMap<String, ImCompleteCompletionItem> {
-    let mut map = HashMap::new();
-    for (_, v) in ast.iter() {
-        if v.name.1.end < ident_offset {
-            map.insert(
-                v.name.0.clone(),
-                ImCompleteCompletionItem::Function(
-                    v.name.0.clone(),
-                    v.args.clone().into_iter().map(|(name, _)| name).collect(),
-                ),
-            );
-        }
-    }
-
-    // collect params variable
-    for (_, v) in ast.iter() {
-        if v.span.end > ident_offset && v.span.start < ident_offset {
-            v.args.iter().for_each(|(item, _)| {
-                map.insert(
-                    item.clone(),
-                    ImCompleteCompletionItem::Variable(item.clone()),
-                );
-            });
-            get_completion_of(&v.body, &mut map, ident_offset);
-        }
-    }
-    map
-}
-
-pub fn get_completion_of(
-    expr: &Spanned<Expr>,
-    definition_map: &mut HashMap<String, ImCompleteCompletionItem>,
-    ident_offset: usize,
-) -> bool {
-    match &expr.0 {
-        Expr::Error => true,
-        Expr::Value(_) => true,
-        // Expr::List(exprs) => exprs
-        //     .iter()
-        //     .for_each(|expr| get_definition(expr, definition_ass_list)),
-        Expr::Local(local) => !(ident_offset >= local.1.start && ident_offset < local.1.end),
-        Expr::Let(name, lhs, rest, _name_span) => {
-            definition_map.insert(
-                name.clone(),
-                ImCompleteCompletionItem::Variable(name.clone()),
-            );
-            match get_completion_of(lhs, definition_map, ident_offset) {
-                true => get_completion_of(rest, definition_map, ident_offset),
-                false => false,
+pub(super) fn completion(namespace: &Namespace) -> Vec<CompletionItem> {
+    namespace
+        .stack
+        .iter()
+        .map(|stack| stack.variables.keys())
+        .flatten()
+        .map(|var| CompletionItem {
+            label: var.to_string(),
+            kind: Some(CompletionItemKind::VARIABLE),
+            ..Default::default()
+        })
+        .chain(NULLARY.iter().map(|(var, (type_, detail))| CompletionItem {
+            label: var.to_string(),
+            kind: Some(CompletionItemKind::CONSTANT),
+            detail: Some(detail.to_string()),
+            documentation: Some(Documentation::MarkupContent(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value: format!("* `{type_:?}`: {}", detail.to_string()),
+            })),
+            ..Default::default()
+        }))
+        .chain(UNARY.iter().map(|(var, variants)| {
+            CompletionItem {
+                label: var.to_string(),
+                kind: Some(CompletionItemKind::FUNCTION),
+                detail: variants
+                    .iter()
+                    .next()
+                    .and_then(|(_, value)| value.get(0).map(|x| x.1.to_string())),
+                documentation: Some(Documentation::MarkupContent(MarkupContent {
+                    kind: MarkupKind::Markdown,
+                    value: variants
+                        .iter()
+                        .map(|(type_, value)| {
+                            value.iter().map(move |(t, explanation)| {
+                                format!("* `{} {:?} -> {:?}`: {}", var, type_, t, explanation)
+                            })
+                        })
+                        .flatten()
+                        .collect::<Vec<String>>()
+                        .join("\n"),
+                })),
+                ..Default::default()
             }
-        }
-        Expr::Then(first, second) => match get_completion_of(first, definition_map, ident_offset) {
-            true => get_completion_of(second, definition_map, ident_offset),
-            false => false,
-        },
-        Expr::Binary(lhs, _op, rhs) => match get_completion_of(lhs, definition_map, ident_offset) {
-            true => get_completion_of(rhs, definition_map, ident_offset),
-            false => false,
-        },
-        Expr::Call(callee, args) => {
-            match get_completion_of(callee, definition_map, ident_offset) {
-                true => {}
-                false => return false,
+        }))
+        .chain(BINARY.iter().map(|(var, variants)| {
+            CompletionItem {
+                label: var.to_string(),
+                kind: Some(CompletionItemKind::FUNCTION),
+                detail: variants
+                    .iter()
+                    .next()
+                    .and_then(|(_, value)| value.get(0).map(|x| x.1.to_string())),
+                documentation: Some(Documentation::MarkupContent(MarkupContent {
+                    kind: MarkupKind::Markdown,
+                    value: variants
+                        .iter()
+                        .map(|(type_, value)| {
+                            value.iter().map(|(t, explanation)| {
+                                format!(
+                                    "* `{:?} {} {:?} -> {:?}`: {}",
+                                    type_.0, var, type_.1, t, explanation,
+                                )
+                            })
+                        })
+                        .flatten()
+                        .collect::<Vec<String>>()
+                        .join("\n"),
+                })),
+                ..Default::default()
             }
-            for expr in &args.0 {
-                match get_completion_of(expr, definition_map, ident_offset) {
-                    true => continue,
-                    false => return false,
-                }
-            }
-            true
-        }
-        Expr::If(test, consequent, alternative) => {
-            match get_completion_of(test, definition_map, ident_offset) {
-                true => {}
-                false => return false,
-            }
-            match get_completion_of(consequent, definition_map, ident_offset) {
-                true => {}
-                false => return false,
-            }
-            get_completion_of(alternative, definition_map, ident_offset)
-        }
-        Expr::Print(expr) => get_completion_of(expr, definition_map, ident_offset),
-        Expr::List(lst) => {
-            for expr in lst {
-                match get_completion_of(expr, definition_map, ident_offset) {
-                    true => continue,
-                    false => return false,
-                }
-            }
-            true
-        }
-    }
+        }))
+        .collect()
 }

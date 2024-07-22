@@ -1,5 +1,6 @@
 pub mod addon;
 pub mod analyze;
+mod completion;
 pub mod definition;
 pub mod hover;
 pub mod semantic_token;
@@ -21,13 +22,15 @@ mod tests {
             ..Default::default()
         };
 
-        let (state_semantic, errors) =
+        let (state_semantic_completion, errors) =
             match analyze::compute(&content, configuration, Default::default()) {
-                Ok((state, semantic, errors)) => (Some((state, semantic)), errors),
+                Ok((state, semantic, completion, errors)) => {
+                    (Some((state, semantic, completion)), errors)
+                }
                 Err(e) => (None, vec![e]),
             };
 
-        let (state, semantic_tokens) = state_semantic.unwrap();
+        let (state, semantic_tokens, _) = state_semantic_completion.unwrap();
 
         assert_eq!(errors.len(), 1);
         assert_eq!(state.explanations.len(), 4);
