@@ -23,7 +23,8 @@ pnpm i
 
 ## How to publish
 
-Create a new semver tag from main and push it.
+* Bump the version in [./client/package.json](./client/package.json)
+* Create a new semver tag from main and push it.
 
 # Authors
 
