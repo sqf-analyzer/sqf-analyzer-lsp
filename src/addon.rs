@@ -18,11 +18,10 @@ use crate::semantic_token::SemanticTokenLocation;
 type Functions = HashMap<Arc<UncasedStr>, Spanned<String>>;
 
 /// tries to find the addon's config or mission description.ext of a given file
-pub fn identify(url: &Url) -> Option<(PathBuf, Functions)> {
-    let addon_path = url.to_file_path().ok()?;
-    if let Some((path, functions)) = identify_(addon_path.clone(), "config.cpp") {
+pub fn identify(file_path: PathBuf) -> Option<(PathBuf, Functions)> {
+    if let Some((path, functions)) = identify_(file_path.clone(), "config.cpp") {
         Some((path, functions))
-    } else if let Some((path, functions)) = identify_(addon_path, "description.ext") {
+    } else if let Some((path, functions)) = identify_(file_path, "description.ext") {
         Some((path, functions))
     } else {
         None

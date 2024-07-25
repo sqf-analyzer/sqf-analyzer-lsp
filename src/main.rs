@@ -14,7 +14,6 @@ use sqf::error::{Error, ErrorType};
 use sqf::UncasedStr;
 use sqf_analyzer_server::{addon, hover};
 use tower_lsp::jsonrpc::Result;
-use tower_lsp::lsp_types::notification::Notification;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
@@ -22,18 +21,22 @@ use sqf_analyzer_server::semantic_token::SemanticTokenLocation;
 use sqf_analyzer_server::{analyze::compute, definition, semantic_token::LEGEND_TYPE};
 
 type States = DashMap<
-    String,
+    Url,
     (
         (State, Vec<SemanticTokenLocation>, Vec<CompletionItem>),
         Option<Arc<UncasedStr>>,
     ),
 >;
 
+fn clean(url: Url) -> Url {
+    Url::from_file_path(url.to_file_path().unwrap()).unwrap()
+}
+
 #[derive(Debug)]
 struct Backend {
     client: Client,
     states: States,
-    documents: DashMap<String, Rope>,
+    documents: DashMap<Url, Rope>,
     undefined_variables_are_error: AtomicBool,
     private_variables_in_mission_are_error: AtomicBool,
     error_on_unused: AtomicBool,
@@ -119,7 +122,7 @@ impl LanguageServer for Backend {
         self.client
             .log_message(
                 MessageType::INFO,
-                format!("file \"{}\" opened", params.text_document.uri),
+                format!("did_open({})", &params.text_document.uri),
             )
             .await;
         self.on_change(TextDocumentItem {
@@ -134,7 +137,7 @@ impl LanguageServer for Backend {
         self.client
             .log_message(
                 MessageType::INFO,
-                format!("file \"{}\" changed", params.text_document.uri),
+                format!("did_change({})", &params.text_document.uri),
             )
             .await;
         self.on_change(TextDocumentItem {
@@ -145,34 +148,54 @@ impl LanguageServer for Backend {
         .await
     }
 
-    async fn did_save(&self, _: DidSaveTextDocumentParams) {
+    async fn did_save(&self, params: DidSaveTextDocumentParams) {
         self.client
-            .log_message(MessageType::INFO, "file saved!")
+            .log_message(
+                MessageType::INFO,
+                format!("did_save({})", &params.text_document.uri),
+            )
             .await;
     }
 
-    async fn did_close(&self, _: DidCloseTextDocumentParams) {
+    async fn did_close(&self, params: DidCloseTextDocumentParams) {
         self.client
-            .log_message(MessageType::INFO, "file closed!")
+            .log_message(
+                MessageType::INFO,
+                format!("did_close({})", &params.text_document.uri),
+            )
             .await;
     }
 
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
-        Ok(self.hover(params))
+        let uri = clean(params.text_document_position_params.text_document.uri);
+        self.client
+            .log_message(MessageType::INFO, format!("hover({})", &uri))
+            .await;
+        let position = params.text_document_position_params.position;
+        Ok(self.hover(uri, position))
     }
 
     async fn goto_definition(
         &self,
         params: GotoDefinitionParams,
     ) -> Result<Option<GotoDefinitionResponse>> {
-        Ok(self.get_definition(params))
+        let uri = clean(params.text_document_position_params.text_document.uri);
+        self.client
+            .log_message(MessageType::INFO, format!("goto_definition({})", &uri))
+            .await;
+        let position = params.text_document_position_params.position;
+        Ok(self.get_definition(uri, position))
     }
 
     async fn semantic_tokens_full(
         &self,
         params: SemanticTokensParams,
     ) -> Result<Option<SemanticTokensResult>> {
-        Ok(self.semantic(params).map(|semantic_token| {
+        let uri = clean(params.text_document.uri);
+        self.client
+            .log_message(MessageType::INFO, format!("semantic_tokens_full({})", &uri))
+            .await;
+        Ok(self.semantic(uri).map(|semantic_token| {
             SemanticTokensResult::Tokens(SemanticTokens {
                 result_id: None,
                 data: semantic_token,
@@ -184,7 +207,11 @@ impl LanguageServer for Backend {
         &self,
         params: tower_lsp::lsp_types::InlayHintParams,
     ) -> Result<Option<Vec<InlayHint>>> {
-        Ok(self.inlay(params))
+        let uri = clean(params.text_document.uri);
+        self.client
+            .log_message(MessageType::INFO, format!("inlay_hint({})", &uri))
+            .await;
+        Ok(self.inlay(uri))
     }
 
     async fn did_change_configuration(&self, params: DidChangeConfigurationParams) {
@@ -269,7 +296,11 @@ impl LanguageServer for Backend {
     }
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
-        Ok(self.completion(params))
+        let uri = clean(params.text_document_position.text_document.uri);
+        self.client
+            .log_message(MessageType::INFO, format!("completion({})", &uri))
+            .await;
+        Ok(self.completion(uri))
     }
 }
 
@@ -278,11 +309,6 @@ struct InlayHintParams {
     path: String,
 }
 
-enum CustomNotification {}
-impl Notification for CustomNotification {
-    type Params = InlayHintParams;
-    const METHOD: &'static str = "custom/notification";
-}
 struct TextDocumentItem {
     uri: Url,
     text: String,
@@ -297,11 +323,10 @@ fn span_to_range((start, end): (usize, usize), rope: &Rope) -> Option<Range> {
 }
 
 impl Backend {
-    fn get_definition(&self, params: GotoDefinitionParams) -> Option<GotoDefinitionResponse> {
-        let uri = params.text_document_position_params.text_document.uri;
-        self.states.get(uri.as_str()).and_then(|state| {
-            let rope = self.documents.get(uri.as_str())?;
-            let offset = position_to_offset(params.text_document_position_params.position, &rope)?;
+    fn get_definition(&self, uri: Url, position: Position) -> Option<GotoDefinitionResponse> {
+        self.states.get(&uri).and_then(|state| {
+            let rope = self.documents.get(&uri)?;
+            let offset = position_to_offset(position, &rope)?;
 
             let def = definition::get_definition(&state.0 .0, offset);
 
@@ -309,7 +334,7 @@ impl Backend {
                 let url = Url::from_file_path(origin.0.as_ref()).ok()?;
                 let range = self
                     .documents
-                    .get(url.as_str())
+                    .get(&url)
                     .and_then(|rope| span_to_range(origin.1.unwrap_or((0, 0)), &rope))
                     .unwrap_or_default();
                 Some(GotoDefinitionResponse::Scalar(Location::new(url, range)))
@@ -362,8 +387,7 @@ impl Backend {
             // store the state of each of the functions
             for (path, (function_name, state_semantic)) in states {
                 if let Ok(url) = Url::from_file_path(path) {
-                    self.states
-                        .insert(url.to_string(), (state_semantic, function_name));
+                    self.states.insert(url, (state_semantic, function_name));
                 }
             }
 
@@ -419,26 +443,30 @@ impl Backend {
     }
 
     async fn on_change(&self, params: TextDocumentItem) {
-        self.load_project(&params.uri, params.version).await;
+        let uri = clean(params.uri);
 
-        let uri = &params.uri;
-        let key = uri.to_string();
-        self.documents
-            .insert(key.clone(), ropey::Rope::from_str(&params.text));
+        self.load_project(&uri, params.version).await;
+
+        self.client
+            .log_message(MessageType::INFO, format!("{}", &uri))
+            .await;
 
         let mission = self
             .states
             .iter()
-            .filter(|x| x.key() != &key)
+            .filter(|x| x.key() != &uri)
             .flat_map(|x| x.0 .0.globals(x.1.clone()))
             .collect();
 
-        let addon_path = addon::identify(&uri).unwrap_or_default().0;
-        let path = uri.to_file_path().expect("utf-8 path");
+        self.documents
+            .insert(uri.clone(), ropey::Rope::from_str(&params.text));
+
+        let file_path = uri.to_file_path().expect("utf-8 path");
+        let base_path = addon::identify(file_path.clone()).unwrap_or_default().0;
 
         let configuration = sqf::analyzer::Configuration {
-            file_path: path.into(),
-            base_path: addon_path,
+            file_path: file_path.into(),
+            base_path,
             addons: self.addon_paths.read().unwrap().clone(),
         };
 
@@ -454,7 +482,7 @@ impl Backend {
         let private_variables_in_mission_are_error = self
             .private_variables_in_mission_are_error
             .load(Ordering::Relaxed);
-        let url = params.uri.clone();
+
         let diagnostics = errors
             .into_iter()
             .filter(|error| {
@@ -470,8 +498,8 @@ impl Backend {
                     .origin
                     .clone()
                     .and_then(|x| Url::from_file_path(x).ok())
-                    .unwrap_or_else(|| url.clone());
-                let rope = self.documents.get(origin.as_str())?;
+                    .unwrap_or_else(|| uri.clone());
+                let rope = self.documents.get(&origin)?;
                 to_diagnostic(error, &rope).map(|x| (origin, x))
             })
             .fold(
@@ -484,7 +512,7 @@ impl Backend {
 
         if diagnostics.is_empty() {
             self.client
-                .publish_diagnostics(params.uri.clone(), vec![], Some(params.version))
+                .publish_diagnostics(uri.clone(), vec![], Some(params.version))
                 .await;
         }
         for (url, diagnostics) in diagnostics {
@@ -494,23 +522,26 @@ impl Backend {
         }
 
         if let Some(state_semantic) = state_semantic {
-            let key = params.uri.to_string();
-            if let Some(mut e) = self.states.get_mut(&key) {
+            if let Some(mut e) = self.states.get_mut(&uri) {
+                self.client
+                    .log_message(
+                        MessageType::INFO,
+                        format!("{:?}", &state_semantic.0.origins),
+                    )
+                    .await;
                 e.value_mut().0 = state_semantic;
             } else {
-                self.states.insert(key, (state_semantic, None));
+                self.states.insert(uri, (state_semantic, None));
             };
         }
     }
 
-    fn hover(&self, params: HoverParams) -> Option<Hover> {
-        let uri = params.text_document_position_params.text_document.uri;
+    fn hover(&self, uri: Url, position: Position) -> Option<Hover> {
+        let rope = self.documents.get(&uri)?;
 
-        let rope = self.documents.get(uri.as_str())?;
+        let state = &self.states.get(&uri)?.0 .0;
 
-        let state = &self.states.get(uri.as_str())?.0 .0;
-
-        let offset = position_to_offset(params.text_document_position_params.position, &rope)?;
+        let offset = position_to_offset(position, &rope)?;
 
         hover::hover(state, offset).map(|explanation| Hover {
             contents: HoverContents::Markup(MarkupContent {
@@ -521,12 +552,10 @@ impl Backend {
         })
     }
 
-    fn inlay(&self, params: tower_lsp::lsp_types::InlayHintParams) -> Option<Vec<InlayHint>> {
-        let uri = &params.text_document.uri;
+    fn inlay(&self, uri: Url) -> Option<Vec<InlayHint>> {
+        let document = self.documents.get(&uri)?;
 
-        let document = self.documents.get(uri.as_str())?;
-
-        let state = &self.states.get(uri.as_str())?.0 .0;
+        let state = &self.states.get(&uri)?.0 .0;
 
         let items = state
             .types
@@ -546,7 +575,7 @@ impl Backend {
                         value: format!(": {type_:?}"),
                         tooltip: None,
                         location: Some(Location {
-                            uri: params.text_document.uri.clone(),
+                            uri: uri.clone(),
                             range: Range {
                                 start: Position::new(0, 4),
                                 end: Position::new(0, 5),
@@ -572,7 +601,7 @@ impl Backend {
                     value: format!("{name}: "),
                     tooltip: None,
                     location: Some(Location {
-                        uri: params.text_document.uri.clone(),
+                        uri: uri.clone(),
                         range: Range {
                             start: Position::new(0, 4),
                             end: Position::new(0, 5),
@@ -587,10 +616,9 @@ impl Backend {
         Some(items.chain(params).collect())
     }
 
-    fn semantic(&self, params: SemanticTokensParams) -> Option<Vec<SemanticToken>> {
-        let uri = params.text_document.uri.as_str();
-        let im_complete_tokens = &self.states.get(uri)?.0 .1;
-        let rope = self.documents.get(uri)?;
+    fn semantic(&self, uri: Url) -> Option<Vec<SemanticToken>> {
+        let im_complete_tokens = &self.states.get(&uri)?.0 .1;
+        let rope = self.documents.get(&uri)?;
         let mut previous_line = 0;
         let mut previous_start = 0;
         let semantic_tokens = im_complete_tokens
@@ -620,12 +648,8 @@ impl Backend {
         Some(semantic_tokens)
     }
 
-    fn completion(&self, params: CompletionParams) -> Option<CompletionResponse> {
-        let uri = params.text_document_position.text_document.uri.as_str();
-        let state = &self.states.get(uri)?.0 .0;
-        //let rope = self.documents.get(uri)?;
-
-        //let offset = position_to_offset(params.text_document_position.position, &rope)?;
+    fn completion(&self, uri: Url) -> Option<CompletionResponse> {
+        let state = &self.states.get(&uri)?.0 .0;
 
         let vars = state
             .namespace
