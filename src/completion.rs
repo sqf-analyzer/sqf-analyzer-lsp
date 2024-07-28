@@ -1,19 +1,61 @@
-use sqf::analyzer::{Namespace, BINARY, NULLARY, UNARY};
+use sqf::{
+    analyzer::{Namespace, Output, Parameter, BINARY, NULLARY, UNARY},
+    types::Type,
+};
 use tower_lsp::lsp_types::{
     CompletionItem, CompletionItemKind, Documentation, MarkupContent, MarkupKind,
 };
+
+fn params_to_string(params: &Vec<Parameter>) -> String {
+    format!(
+        "[{}]",
+        params
+            .iter()
+            .map(|param| format!("{}: {:?}", param.name, param.type_))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+
+fn output_to_string(output: &Option<Output>) -> Option<String> {
+    output.as_ref().map(|output| match output {
+        Output::Type(type_) => format!("{type_:?}"),
+        Output::Code(params, output) => params
+            .as_ref()
+            .map(params_to_string)
+            .map(|param| output.map(|o| format!("{param} -> {o:?}")).unwrap_or(param))
+            .unwrap_or_else(|| format!("{:?}", Type::Code)),
+    })
+}
 
 pub(super) fn completion(namespace: &Namespace) -> Vec<CompletionItem> {
     namespace
         .stack
         .iter()
-        .map(|stack| stack.variables.keys())
+        .map(|stack| stack.variables.iter())
         .flatten()
-        .map(|var| CompletionItem {
+        .map(|(var, (_, output))| CompletionItem {
             label: var.to_string(),
-            kind: Some(CompletionItemKind::VARIABLE),
+            kind: Some(
+                matches!(output.as_ref(), Some(Output::Code(_, _)))
+                    .then(|| CompletionItemKind::VARIABLE)
+                    .unwrap_or_else(|| CompletionItemKind::FUNCTION),
+            ),
+            detail: output_to_string(output),
             ..Default::default()
         })
+        .chain(namespace.mission.iter().map(|(var, (_, output))| {
+            CompletionItem {
+                label: var.to_string(),
+                kind: Some(
+                    matches!(output.as_ref(), Some(Output::Code(_, _)))
+                        .then(|| CompletionItemKind::VARIABLE)
+                        .unwrap_or_else(|| CompletionItemKind::FUNCTION),
+                ),
+                detail: output_to_string(output),
+                ..Default::default()
+            }
+        }))
         .chain(NULLARY.iter().map(|(var, (type_, detail))| CompletionItem {
             label: var.to_string(),
             kind: Some(CompletionItemKind::CONSTANT),
